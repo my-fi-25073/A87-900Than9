@@ -17603,7 +17603,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "PCM_marbastlib-mx:LED_MX_3mm"
+		(property "Footprint" "My-Fi Footprints:DIP_LED_MX_3mm"
 			(at 284.48 237.49 0)
 			(effects
 				(font
@@ -25500,7 +25500,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "PCM_marbastlib-mx:LED_MX_3mm"
+		(property "Footprint" "My-Fi Footprints:DIP_LED_MX_3mm"
 			(at 284.48 256.54 0)
 			(effects
 				(font
