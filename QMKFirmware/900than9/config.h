@@ -1,0 +1,18 @@
+#pragma once
+
+#define DYNAMIC_KEYMAP_LAYER_COUNT 6
+#define USB_POLLING_INTERVAL_MS 1
+#define FORCE_NKRO
+
+// 백라이트 설정
+#define BACKLIGHT_ENABLE
+#define BACKLIGHT_PINS { A6, A7, B0 }
+#define BACKLIGHT_LEVELS 5
+#define BACKLIGHT_ON_STATE 1
+
+// PWM 드라이버 설정 (모든 LED가 TIM3 사용)
+// A6 = TIM3_CH1, A7 = TIM3_CH2, B0 = TIM3_CH3
+#define BACKLIGHT_DRIVER pwm
+#define BACKLIGHT_PWM_DRIVER PWMD3
+#define BACKLIGHT_PWM_CHANNEL 1
+#define BACKLIGHT_PAL_MODE 2

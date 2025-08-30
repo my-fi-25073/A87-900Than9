@@ -1,0 +1,17 @@
+# Commit Message Template (English)
+#
+# Type: feat|fix|docs|style|refactor|test|chore
+# Scope: (optional) what part of the codebase is affected
+#
+# Subject: short description (50 chars or less)
+#
+# Body: longer description (wrap at 72 chars)
+#
+# Footer: (optional) references to issues, breaking changes
+#
+# Examples:
+# feat: add backlight support for 900Than9 keyboard
+# fix: resolve PWM configuration issue
+# docs: update README with installation instructions
+#
+# Write your commit message in English below:
