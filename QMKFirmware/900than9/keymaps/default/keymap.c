@@ -2,8 +2,26 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include QMK_KEYBOARD_H
+
 #include "os_detection.h"
-enum my_keymap_layers {
+
+// 타이핑 LED 제어 변수
+static bool typing_led_enabled = true; // 기본값: 켜짐
+static bool typing_led_on = false;     // 현재 점등 여부
+
+// 브리딩 LED 제어 변수
+static uint16_t breathing_timer = 0;
+static uint8_t breathing_duty = 0;
+static bool breathing_up = true;
+static bool breathing_led_enabled = true; // 기본값: 켜짐
+
+// LED 핀 정의
+#define LED_PIN_A6 A6
+#define LED_PIN_A7 A7
+#define LED_PIN_B0 B0
+
+enum my_keymap_layers
+{
     LAYER_BASE = 0,
     LAYER_LOWER,
     LAYER_RAISE,
@@ -31,7 +49,7 @@ enum my_keymap_layers {
 #define PT_Z LT(LAYER_POINTER, KC_Z)
 #define PT_SLSH LT(LAYER_POINTER, KC_SLSH)
 
-#define LO_SPC  _LO(KC_SPC)
+#define LO_SPC _LO(KC_SPC)
 #define LO_COMM _LO(KC_COMM)
 #define LO_DOT _LO(KC_DOT)
 
@@ -61,13 +79,14 @@ enum my_keymap_layers {
 #define SH_QUOT LSFT(KC_QUOT)
 #define SH_SCLN LSFT(KC_SCLN)
 #define SH_COMM LSFT(KC_COMM)
-#define SH_DOT  LSFT(KC_DOT)
+#define SH_DOT LSFT(KC_DOT)
 #define SH_SLSH LSFT(KC_SLSH)
 
-enum keycodes {
+enum keycodes
+{
     GO_LEFT = SAFE_RANGE, // ctrl + left, left desktop, win ctrl <
-    GO_RGHT, // ctrl + right, right desktop, win ctrl >
-    GO_UP, // ctrl + up, mission control, win tab
+    GO_RGHT,              // ctrl + right, right desktop, win ctrl >
+    GO_UP,                // ctrl + up, mission control, win tab
 
     WO_LEFT, // next word
     WO_RGHT, // prev word
@@ -82,8 +101,10 @@ enum keycodes {
     VC_UFDA, // visual studio code unfold all
     VC_FLDR, // visual studio code fold recursive
     VC_UFDR, // visual studio code unfold recursive
-};
 
+    TG_BLED, // Breathing LED 토글 키
+    TG_TLED, // Typing LED 토글 키
+};
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
@@ -97,7 +118,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_LCTL, KC_LGUI, KC_LALT, KC_SPC,           KC_SPC,           KC_SPC,           KC_SPC,           KC_SPC,  KC_RALT, KC_RGUI, KC_RCTL,    KC_LEFT, KC_DOWN, KC_RGHT
     ),
     [1] = LAYOUT(
-        XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, XXXXXXX, XXXXXXX,
+        TG_BLED,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, TG_TLED, XXXXXXX,
         XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,             XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,
@@ -122,3 +143,445 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     ),
     // clang-format on
 };
+
+bool process_record_user(uint16_t keycode, keyrecord_t* record)
+{
+    if (typing_led_enabled)
+    {
+        if (record->event.pressed)
+        {
+            typing_led_on = true;
+        }
+        else
+        {
+            // 눌린 키 없으면 꺼지게
+            typing_led_on = false;
+            for (uint8_t row = 0; row < MATRIX_ROWS; row++)
+            {
+                if (matrix_get_row(row))
+                {
+                    typing_led_on = true;
+                    break;
+                }
+            }
+        }
+
+        // LED 상태 업데이트
+        if (typing_led_on)
+        {
+            writePinHigh(A7);
+        }
+        else
+        {
+            writePinLow(A7);
+        }
+    }
+
+    os_variant_t host = detected_host_os();
+    switch (keycode)
+    {
+        case OS_LANG:
+            if (record->event.pressed)
+            {
+                if (host == OS_WINDOWS)
+                {
+                    tap_code(KC_RALT);
+                }
+                else
+                {
+                    register_code(KC_LCTL);
+                    tap_code(KC_SPACE);
+                    unregister_code(KC_LCTL);
+                }
+            }
+            return false;
+        case OS_PSCR:
+            if (host == OS_WINDOWS)
+            {
+                if (record->event.pressed)
+                {
+                    register_code(KC_LGUI);
+                    register_code(KC_LSFT);
+                    tap_code(KC_S);
+                    unregister_code(KC_LGUI);
+                    unregister_code(KC_LSFT);
+                }
+            }
+            else
+            {
+                if (record->event.pressed)
+                {
+                    register_code(KC_LGUI);
+                    register_code(KC_LSFT);
+                    tap_code(KC_4);
+                    unregister_code(KC_LGUI);
+                    unregister_code(KC_LSFT);
+                }
+            }
+            return false;
+
+        case WO_LEFT:
+            if (record->event.pressed)
+            {
+                if (host == OS_WINDOWS)
+                {
+                    register_code(KC_LCTL);
+                    register_code(KC_LEFT);
+                    // unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    register_code(KC_LALT);
+                    register_code(KC_LEFT);
+                    // unregister_code(KC_LALT);
+                }
+            }
+            else
+            {
+                if (host == OS_WINDOWS)
+                {
+                    // register_code(KC_LCTL);
+                    unregister_code(KC_LEFT);
+                    unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    // register_code(KC_LALT);
+                    unregister_code(KC_LEFT);
+                    unregister_code(KC_LALT);
+                }
+            }
+            return false;
+
+        case WO_RGHT:
+            if (record->event.pressed)
+            {
+                if (host == OS_WINDOWS)
+                {
+                    register_code(KC_LCTL);
+                    register_code(KC_RIGHT);
+                    // unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    register_code(KC_LALT);
+                    register_code(KC_RIGHT);
+                    // unregister_code(KC_LALT);
+                }
+            }
+            else
+            {
+                if (host == OS_WINDOWS)
+                {
+                    // register_code(KC_LCTL);
+                    unregister_code(KC_RIGHT);
+                    unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    // register_code(KC_LALT);
+                    unregister_code(KC_RIGHT);
+                    unregister_code(KC_LALT);
+                }
+            }
+
+            return false;
+
+        case MC_LCMD:
+            if (host == OS_WINDOWS)
+            {
+                if (record->event.pressed)
+                    register_code(KC_LCTL);
+                else
+                    unregister_code(KC_LCTL);
+            }
+            else
+            {
+                if (record->event.pressed)
+                    register_code(KC_LGUI);
+                else
+                    unregister_code(KC_LGUI);
+            }
+
+            return false;
+
+        case MC_LCTL:
+            if (host == OS_WINDOWS)
+            {
+                if (record->event.pressed)
+                    register_code(KC_LGUI);
+                else
+                    unregister_code(KC_LGUI);
+            }
+            else
+            {
+                if (record->event.pressed)
+                    register_code(KC_LCTL);
+                else
+                    unregister_code(KC_LCTL);
+            }
+
+            return false;
+
+        case GO_LEFT:
+            if (host == OS_WINDOWS)
+            {
+                if (record->event.pressed)
+                {
+                    register_code(KC_LGUI);
+                    register_code(KC_LCTL);
+                    tap_code(KC_LEFT);
+                    unregister_code(KC_LCTL);
+                    unregister_code(KC_LGUI);
+                }
+            }
+            else
+            {
+                if (record->event.pressed)
+                {
+                    register_code(KC_LCTL);
+                    tap_code(KC_LEFT);
+                    unregister_code(KC_LCTL);
+                }
+            }
+
+            return false;
+
+        case GO_RGHT:
+            if (host == OS_WINDOWS)
+            {
+                if (record->event.pressed)
+                {
+                    register_code(KC_LGUI);
+                    register_code(KC_LCTL);
+                    tap_code(KC_RIGHT);
+                    unregister_code(KC_LCTL);
+                    unregister_code(KC_LGUI);
+                }
+            }
+            else
+            {
+                if (record->event.pressed)
+                {
+                    register_code(KC_LCTL);
+                    tap_code(KC_RIGHT);
+                    unregister_code(KC_LCTL);
+                }
+            }
+
+            return false;
+
+        case GO_UP:
+            if (host == OS_WINDOWS)
+            {
+                if (record->event.pressed)
+                {
+                    register_code(KC_LGUI);
+                    tap_code(KC_TAB);
+                    unregister_code(KC_LGUI);
+                }
+            }
+            else
+            {
+                if (record->event.pressed)
+                {
+                    register_code(KC_LCTL);
+                    tap_code(KC_UP);
+                    unregister_code(KC_LCTL);
+                }
+            }
+            return false;
+
+        case VS_BRCK:
+            if (record->event.pressed)
+            {
+                if (host == OS_WINDOWS)
+                {
+                    register_code(KC_LCTL);
+                    register_code(KC_LALT);
+                    tap_code(KC_PAUS);
+                    unregister_code(KC_LALT);
+                    unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    tap_code(KC_PAUS);
+                }
+            }
+            return false;
+
+        case VC_FLDA:
+            if (record->event.pressed)
+            {
+                if (host == OS_WINDOWS)
+                {
+                    register_code(KC_LCTL);
+                    tap_code(KC_K);
+                    tap_code(KC_0);
+                    unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    register_code(KC_LGUI);
+                    tap_code(KC_K);
+                    tap_code(KC_0);
+                    unregister_code(KC_LGUI);
+                }
+            }
+            return false;
+
+        case VC_UFDA:
+            if (record->event.pressed)
+            {
+                if (host == OS_WINDOWS)
+                {
+                    register_code(KC_LCTL);
+                    tap_code(KC_K);
+                    tap_code(KC_J);
+                    unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    register_code(KC_LGUI);
+                    tap_code(KC_K);
+                    tap_code(KC_J);
+                    unregister_code(KC_LGUI);
+                }
+            }
+            return false;
+
+        case VC_FLDR:
+            if (record->event.pressed)
+            {
+                if (host == OS_WINDOWS)
+                {
+                    register_code(KC_LCTL);
+                    tap_code(KC_K);
+                    tap_code(KC_LBRC);
+                    unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    register_code(KC_LGUI);
+                    tap_code(KC_K);
+                    tap_code(KC_LBRC);
+                    unregister_code(KC_LGUI);
+                }
+            }
+            return false;
+
+        case VC_UFDR:
+            if (record->event.pressed)
+            {
+                if (host == OS_WINDOWS)
+                {
+                    register_code(KC_LCTL);
+                    tap_code(KC_K);
+                    tap_code(KC_RBRC);
+                    unregister_code(KC_LCTL);
+                }
+                else
+                {
+                    register_code(KC_LGUI);
+                    tap_code(KC_K);
+                    tap_code(KC_RBRC);
+                    unregister_code(KC_LGUI);
+                }
+            }
+
+            return false;
+        case TG_BLED:
+            if (record->event.pressed)
+            {
+                breathing_led_enabled = !breathing_led_enabled;
+                if (!breathing_led_enabled)
+                {
+                    writePinLow(LED_PIN_A6); // 끌 때 확실히 꺼주기
+                }
+            }
+            return false; // 키 입력 자체는 소비
+        case TG_TLED:
+            if (record->event.pressed)
+            {
+                typing_led_enabled = !typing_led_enabled;
+                if (!typing_led_enabled)
+                {
+                    writePinLow(LED_PIN_A7); // 끌 때 확실히 꺼주기
+                    typing_led_on = false;
+                }
+            }
+            return false;
+    }
+
+    return true;
+}
+
+void keyboard_post_init_user(void)
+{
+    // A6, A7, B0 핀 출력 설정
+    setPinOutput(LED_PIN_A6);
+    setPinOutput(LED_PIN_A7);
+    setPinOutput(LED_PIN_B0);
+}
+
+void matrix_scan_user(void)
+{
+    // --- A6 Breathing ---
+    if (breathing_led_enabled)
+    {
+        if (timer_elapsed(breathing_timer) > 20)
+        { // 20ms 주기
+            breathing_timer = timer_read();
+            if (breathing_up)
+            {
+                breathing_duty++;
+                if (breathing_duty >= 255)
+                    breathing_up = false;
+            }
+            else
+            {
+                breathing_duty--;
+                if (breathing_duty <= 0)
+                    breathing_up = true;
+            }
+            // PWM 흉내: 듀티에 따라 LED 깜빡임
+            if ((timer_read() % 256) < breathing_duty)
+            {
+                writePinHigh(LED_PIN_A6);
+            }
+            else
+            {
+                writePinLow(LED_PIN_A6);
+            }
+        }
+    }
+
+    // --- A7 Typing 반응 ---
+    if (typing_led_enabled)
+    {
+        if (typing_led_on)
+        {
+            writePinHigh(LED_PIN_A7);
+        }
+        else
+        {
+            writePinLow(LED_PIN_A7);
+        }
+    }
+
+    // --- B0 QMK 기본 Indicator ---
+    led_update_user(host_keyboard_led_state());
+}
+
+bool led_update_user(led_t led_state)
+{
+    if (led_state.caps_lock)
+    {
+        writePinHigh(LED_PIN_B0); // CapsLock 켜지면 B0 LED 켜기
+    }
+    else
+    {
+        writePinLow(LED_PIN_B0);
+    }
+    return true;
+}
