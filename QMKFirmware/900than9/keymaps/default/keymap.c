@@ -6,14 +6,9 @@
 #include "os_detection.h"
 
 // 타이핑 LED 제어 변수
-static bool typing_led_enabled = true; // 기본값: 켜짐
+static bool esc_led_enabled = true;    // 기본값: 켜짐
+static bool scroll_led_enabled = true; // 기본값: 켜짐
 static bool typing_led_on = false;     // 현재 점등 여부
-
-// 브리딩 LED 제어 변수
-static uint16_t breathing_timer = 0;
-static uint8_t breathing_duty = 0;
-static bool breathing_up = true;
-static bool breathing_led_enabled = true; // 기본값: 켜짐
 
 // LED 핀 정의
 #define LED_PIN_A6 A6
@@ -102,8 +97,8 @@ enum keycodes
     VC_FLDR, // visual studio code fold recursive
     VC_UFDR, // visual studio code unfold recursive
 
-    TG_BLED, // Breathing LED 토글 키
     TG_TLED, // Typing LED 토글 키
+    TG_LESC, // ESC LED 토글 키
 };
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
@@ -118,7 +113,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_LCTL, KC_LGUI, KC_LALT, KC_SPC,           KC_SPC,           KC_SPC,           KC_SPC,           KC_SPC,  KC_RALT, KC_RGUI, KC_RCTL,    KC_LEFT, KC_DOWN, KC_RGHT
     ),
     [1] = LAYOUT(
-        TG_BLED,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, TG_TLED, XXXXXXX,
+        TG_LESC,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, TG_TLED, XXXXXXX,
         XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,             XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,
@@ -146,7 +141,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 bool process_record_user(uint16_t keycode, keyrecord_t* record)
 {
-    if (typing_led_enabled)
+    if (scroll_led_enabled || esc_led_enabled)
     {
         if (record->event.pressed)
         {
@@ -164,16 +159,6 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record)
                     break;
                 }
             }
-        }
-
-        // LED 상태 업데이트
-        if (typing_led_on)
-        {
-            writePinHigh(A7);
-        }
-        else
-        {
-            writePinLow(A7);
         }
     }
 
@@ -490,23 +475,24 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record)
             }
 
             return false;
-        case TG_BLED:
-            if (record->event.pressed)
-            {
-                breathing_led_enabled = !breathing_led_enabled;
-                if (!breathing_led_enabled)
-                {
-                    writePinLow(LED_PIN_A6); // 끌 때 확실히 꺼주기
-                }
-            }
-            return false; // 키 입력 자체는 소비
         case TG_TLED:
             if (record->event.pressed)
             {
-                typing_led_enabled = !typing_led_enabled;
-                if (!typing_led_enabled)
+                scroll_led_enabled = !scroll_led_enabled;
+                if (!scroll_led_enabled)
                 {
                     writePinLow(LED_PIN_A7); // 끌 때 확실히 꺼주기
+                    typing_led_on = false;
+                }
+            }
+            return false;
+        case TG_LESC:
+            if (record->event.pressed)
+            {
+                esc_led_enabled = !esc_led_enabled;
+                if (!esc_led_enabled)
+                {
+                    writePinLow(LED_PIN_A6); // 끌 때 확실히 꺼주기
                     typing_led_on = false;
                 }
             }
@@ -526,38 +512,21 @@ void keyboard_post_init_user(void)
 
 void matrix_scan_user(void)
 {
-    // --- A6 Breathing ---
-    if (breathing_led_enabled)
+    // --- A6 ESC LED ---
+    if (esc_led_enabled)
     {
-        if (timer_elapsed(breathing_timer) > 20)
-        { // 20ms 주기
-            breathing_timer = timer_read();
-            if (breathing_up)
-            {
-                breathing_duty++;
-                if (breathing_duty >= 255)
-                    breathing_up = false;
-            }
-            else
-            {
-                breathing_duty--;
-                if (breathing_duty <= 0)
-                    breathing_up = true;
-            }
-            // PWM 흉내: 듀티에 따라 LED 깜빡임
-            if ((timer_read() % 256) < breathing_duty)
-            {
-                writePinHigh(LED_PIN_A6);
-            }
-            else
-            {
-                writePinLow(LED_PIN_A6);
-            }
+        if (typing_led_on)
+        {
+            writePinHigh(LED_PIN_A6);
+        }
+        else
+        {
+            writePinLow(LED_PIN_A6);
         }
     }
 
     // --- A7 Typing 반응 ---
-    if (typing_led_enabled)
+    if (scroll_led_enabled)
     {
         if (typing_led_on)
         {
