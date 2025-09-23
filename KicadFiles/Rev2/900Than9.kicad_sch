@@ -12312,7 +12312,7 @@
 		(dnp no)
 		(uuid "067d3bc7-9b06-48ea-9b08-aa962a806339")
 		(property "Reference" "Outline1"
-			(at 265.43 184.15 0)
+			(at 264.16 182.88 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12320,8 +12320,8 @@
 				(justify left)
 			)
 		)
-		(property "Value" "~"
-			(at 266.7 185.42 0)
+		(property "Value" "Outline"
+			(at 264.16 185.42 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12329,7 +12329,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "My-Fi Footprints:A87-outline_jst"
+		(property "Footprint" "My-Fi Footprints:Outline-A87_jst"
 			(at 267.97 185.42 0)
 			(effects
 				(font
@@ -13110,70 +13110,6 @@
 			(project "900Than9"
 				(path "/c9323b67-6e60-43d3-95e0-b7c3373cbf1d"
 					(reference "MX45")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "PCM_marbastlib-mx:MX_stab")
-		(at 160.02 157.48 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "105bdf29-377e-4d1d-8a60-7cf9989db6bb")
-		(property "Reference" "S97"
-			(at 166.37 156.0829 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "MX_stab"
-			(at 166.37 158.6229 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "PCM_marbastlib-mx:STAB_MX_6u"
-			(at 160.02 157.48 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 160.02 157.48 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Cherry MX-style stabilizer"
-			(at 160.02 157.48 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(instances
-			(project "900Than9"
-				(path "/c9323b67-6e60-43d3-95e0-b7c3373cbf1d"
-					(reference "S97")
 					(unit 1)
 				)
 			)
