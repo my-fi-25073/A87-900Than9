@@ -10,6 +10,11 @@ static bool esc_led_enabled = true;    // 기본값: 켜짐
 static bool scroll_led_enabled = true; // 기본값: 켜짐
 static bool typing_led_on = false;     // 현재 점등 여부
 
+// 브리딩 LED 제어 변수
+static uint16_t breathing_cycle = 0;    // 0-1023 사이클
+static uint32_t last_typing_time = 0;   // 마지막 타이핑 시간
+static bool esc_breathing_mode = false; // ESC 브리딩 모드 여부
+
 // LED 핀 정의
 #define LED_PIN_A6 A6
 #define LED_PIN_A7 A7
@@ -106,11 +111,11 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     // clang-format off
     [0] = LAYOUT(
         KC_ESC,           KC_F1,   KC_F2,   KC_F3,   KC_F4,   KC_F5,   KC_F6,   KC_F7,   KC_F8,            KC_F9,   KC_F10,  KC_F11,  KC_F12,     KC_PSCR, KC_SCRL, KC_PAUS,
-        KC_GRV,  KC_1,    KC_2,    KC_3,    KC_4,    KC_5,    KC_6,    KC_7,    KC_8,    KC_9,    KC_0,    KC_MINS, KC_EQL,  KC_BSLS, KC_GRV,     KC_INS,  KC_HOME, KC_PGUP,
+        KC_GRV,  KC_1,    KC_2,    KC_3,    KC_4,    KC_5,    KC_6,    KC_7,    KC_8,    KC_9,    KC_0,    KC_MINS, KC_EQL,  KC_BSLS, KC_BSPC,     KC_INS,  KC_HOME, KC_PGUP,
         KC_TAB,  KC_Q,    KC_W,    KC_E,    KC_R,    KC_T,    KC_Y,    KC_U,    KC_I,    KC_O,    KC_P,    KC_LBRC, KC_RBRC, KC_BSLS,             KC_DEL,  KC_END,  KC_PGDN,
         KC_CAPS,          KC_A,    KC_S,    KC_D,    KC_F,    KC_G,    KC_H,    KC_J,    KC_K,    KC_L,    KC_SCLN, KC_QUOT, KC_BSLS, KC_ENT,
         MO(1),   KC_LSFT, KC_Z,    KC_X,    KC_C,    KC_V,    KC_B,    KC_N,    KC_M,    KC_COMM, KC_DOT,  KC_SLSH,          KC_RSFT, MO(1),               KC_UP,
-        KC_LCTL, KC_LGUI, KC_LALT, KC_SPC,           KC_SPC,           KC_SPC,           KC_SPC,           KC_SPC,  KC_RALT, KC_RGUI, KC_RCTL,    KC_LEFT, KC_DOWN, KC_RGHT
+        KC_LCTL, KC_LGUI, KC_LGUI, KC_LALT,           KC_SPC,           KC_SPC,           KC_SPC,           KC_RALT,  KC_RGUI, KC_RGUI, KC_RCTL,    KC_LEFT, KC_DOWN, KC_RGHT
     ),
     [1] = LAYOUT(
         TG_LESC,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, TG_TLED, XXXXXXX,
@@ -146,6 +151,8 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record)
         if (record->event.pressed)
         {
             typing_led_on = true;
+            last_typing_time = timer_read32(); // 타이핑 시간 업데이트
+            esc_breathing_mode = false;        // 타이핑 중이면 브리딩 모드 해제
         }
         else
         {
@@ -512,16 +519,34 @@ void keyboard_post_init_user(void)
 
 void matrix_scan_user(void)
 {
-    // --- A6 ESC LED ---
+    // --- A6 ESC LED (타이핑 + 브리딩 효과) ---
     if (esc_led_enabled)
     {
+        // 타이핑 중이면 LED 끄기
         if (typing_led_on)
         {
-            writePinHigh(LED_PIN_A6);
+            writePinLow(LED_PIN_A6);
+            esc_breathing_mode = false; // 브리딩 모드 해제
         }
         else
         {
-            writePinLow(LED_PIN_A6);
+            // 타이핑이 없으면 1초 후 브리딩 모드로 전환
+            if (timer_elapsed32(last_typing_time) > 1000) // 1초 후
+            {
+                esc_breathing_mode = true; // 브리딩 모드 활성화
+            }
+
+            if (esc_breathing_mode)
+            {
+                // 브리딩 효과는 housekeeping_task_user에서 처리
+                // 여기서는 기본적으로 켜둠
+                // writePinHigh(LED_PIN_A6);
+            }
+            else
+            {
+                // 기본 상태: 최대 밝기
+                writePinHigh(LED_PIN_A6);
+            }
         }
     }
 
@@ -538,8 +563,97 @@ void matrix_scan_user(void)
         }
     }
 
-    // --- B0 QMK 기본 Indicator ---
-    led_update_user(host_keyboard_led_state());
+    // --- B0 CapsLock LED ---
+    if (!host_keyboard_led_state().caps_lock)
+    {
+        // CapsLock이 꺼져있으면 LED 끄기
+        writePinLow(LED_PIN_B0);
+    }
+}
+
+void housekeeping_task_user(void)
+{
+    // --- A6 ESC LED 브리딩 효과 ---
+    if (esc_led_enabled && esc_breathing_mode)
+    {
+        // 브리딩 사이클 업데이트 (매 호출마다 - 4초 주기)
+        breathing_cycle = (breathing_cycle + 1) % 8000; // 0-7999 사이클 (8000 호출 = 4초)
+
+        // 자연스러운 브리딩 효과 (4초 주기)
+        uint8_t brightness;
+        // 간단한 삼각파 기반 (더 자연스러움)
+        uint16_t phase = breathing_cycle % 8000;
+        uint16_t half_cycle = 4000;
+
+        if (phase < half_cycle)
+        {
+            // 상승 구간: 선형 증가
+            brightness = 45 + (phase * 210) / half_cycle;
+        }
+        else
+        {
+            // 하강 구간: 선형 감소
+            uint16_t progress = 8000 - phase;
+            brightness = 45 + (progress * 210) / half_cycle;
+        }
+
+        // 고주파 PWM 시뮬레이션: 더 빠른 깜빡임
+        static uint8_t esc_pwm_counter = 0;
+        esc_pwm_counter += 12;
+
+        bool new_led_state = (esc_pwm_counter < brightness);
+
+        // 매 호출마다 LED 상태 업데이트 (PWM 효과를 위해)
+        if (new_led_state)
+        {
+            writePinHigh(LED_PIN_A6);
+        }
+        else
+        {
+            writePinLow(LED_PIN_A6);
+        }
+    }
+
+    // --- B0 브리딩 효과 (CapsLock이 켜져있을 때만) ---
+    if (host_keyboard_led_state().caps_lock)
+    {
+        // 브리딩 사이클 업데이트 (매 호출마다 - 4초 주기)
+        breathing_cycle = (breathing_cycle + 1) % 8000; // 0-7999 사이클 (8000 호출 = 4초)
+
+        // 자연스러운 브리딩 효과 (4초 주기)
+        uint8_t brightness;
+        // 간단한 삼각파 기반 (더 자연스러움)
+        uint16_t phase = breathing_cycle % 8000;
+        uint16_t half_cycle = 4000;
+
+        if (phase < half_cycle)
+        {
+            // 상승 구간: 선형 증가
+            brightness = 45 + (phase * 210) / half_cycle;
+        }
+        else
+        {
+            // 하강 구간: 선형 감소
+            uint16_t progress = 8000 - phase;
+            brightness = 45 + (progress * 210) / half_cycle;
+        }
+
+        // 고주파 PWM 시뮬레이션: 더 빠른 깜빡임
+        static uint8_t pwm_counter = 0;
+        pwm_counter += 12;
+
+        bool new_led_state = (pwm_counter < brightness);
+
+        // 매 호출마다 LED 상태 업데이트 (PWM 효과를 위해)
+        if (new_led_state)
+        {
+            writePinHigh(LED_PIN_B0);
+        }
+        else
+        {
+            writePinLow(LED_PIN_B0);
+        }
+    }
 }
 
 bool led_update_user(led_t led_state)
