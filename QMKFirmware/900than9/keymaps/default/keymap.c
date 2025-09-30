@@ -6,8 +6,6 @@
 #include "os_detection.h"
 
 // 타이핑 LED 제어 변수
-static bool esc_led_enabled = true;    // 기본값: 켜짐
-static bool scroll_led_enabled = true; // 기본값: 켜짐
 static bool typing_led_on = false;     // 현재 점등 여부
 
 // 브리딩 LED 제어 변수
@@ -15,11 +13,73 @@ static uint16_t breathing_cycle = 0;    // 0-1023 사이클
 static uint32_t last_typing_time = 0;   // 마지막 타이핑 시간
 static bool breathing_mode = false;     // 공용 브리딩 모드 여부
 static uint8_t pwm_counter_common = 0;  // 공용 브리딩 PWM 카운터
+static bool any_key_held = false;       // 현재 하나라도 눌림 유지 중인지
+// 키 입력 순간 점멸 지속 시간(ms)
+static const uint16_t TYPING_FLASH_MS = 33;
+
+// LED 동작 모드 플래그 (가독성 향상)
+#ifndef BIT
+#define BIT(n) (1u << (n))
+#endif
+
+typedef enum {
+    LED_MODE_NONE             = 0,
+    LED_MODE_TYPING_HOLD      = BIT(0), // 타이핑 반응 적용 (홀드)
+    LED_MODE_BREATHING        = BIT(1), // 브리딩 적용
+    LED_MODE_TYPING_EDGE      = BIT(2), // 눌림 에지에서만 반응(홀드 무시)
+    LED_MODE_INVERT           = BIT(3), // 타이핑 시 반전(끄기)
+    LED_MODE_FORCE_ON         = BIT(4)  // 강제 켬(모드 무시)
+} led_mode_flag_t;
+
+// 별칭(읽기 쉬운 이름)
+#define EFFECT_NONE          LED_MODE_NONE
+#define EFFECT_TYPING_HOLD   LED_MODE_TYPING_HOLD
+#define EFFECT_BREATHING     LED_MODE_BREATHING
+#define EFFECT_TYPING_EDGE   LED_MODE_TYPING_EDGE
+#define EFFECT_INVERT        LED_MODE_INVERT
+#define EFFECT_FORCE_ON      LED_MODE_FORCE_ON
+
+// 헬퍼
+#define EFFECT_HAS(mode, flag) (((mode) & (flag)) != 0)
+
+// (중복 정의 제거됨)
 
 // LED 핀 정의
 #define LED_PIN_A6 A6
 #define LED_PIN_A7 A7
 #define LED_PIN_B0 B0
+
+// 핀 인덱스
+#define IDX_A6 0
+#define IDX_A7 1
+#define IDX_B0 2
+
+// 핀 배열
+static const pin_t kPins[3] = { LED_PIN_A6, LED_PIN_A7, LED_PIN_B0 };
+
+// 인디케이터 소스
+typedef enum {
+    IND_NONE = 0,
+    IND_SCROLL = 1,
+    IND_CAPS = 2,
+} indicator_t;
+
+// 핀별 모드 플래그(LED_MODE_*)와 인디케이터 소스, 타이핑시 반전 여부
+static uint8_t pin_mode_flags[3] = {
+    EFFECT_TYPING_EDGE | EFFECT_BREATHING | EFFECT_INVERT, // A6
+    EFFECT_TYPING_EDGE | EFFECT_BREATHING,                  // A7
+    EFFECT_TYPING_HOLD | EFFECT_BREATHING | EFFECT_INVERT                                                             // B0
+};
+static indicator_t pin_indicator_src[3] = {
+    IND_NONE,   // A6
+    IND_SCROLL, // A7
+    IND_CAPS    // B0
+};
+
+// 가독성을 위한 효과 활성화 매크로
+#define led0_effect_enabled (pin_mode_flags[IDX_A6] != 0)
+#define led1_effect_enabled (pin_mode_flags[IDX_A7] != 0)
+#define led2_effect_enabled (pin_mode_flags[IDX_B0] != 0)
 
 enum my_keymap_layers
 {
@@ -85,7 +145,7 @@ enum my_keymap_layers
 
 enum keycodes
 {
-    GO_LEFT = SAFE_RANGE, // ctrl + left, left desktop, win ctrl <
+    GO_LEFT = QK_KB_0, // ctrl + left, left desktop, win ctrl <
     GO_RGHT,              // ctrl + right, right desktop, win ctrl >
     GO_UP,                // ctrl + up, mission control, win tab
 
@@ -103,8 +163,9 @@ enum keycodes
     VC_FLDR, // visual studio code fold recursive
     VC_UFDR, // visual studio code unfold recursive
 
-    TG_TLED, // Typing LED 토글 키
-    TG_LESC, // ESC LED 토글 키
+    TG_LED0, // Pin0(A6) 토글 키
+    TG_LED1, // Pin1(A7) 토글 키
+    TG_LED2, // Pin2(B0) 토글 키
 };
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
@@ -119,7 +180,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_LCTL, KC_LGUI, KC_LGUI, KC_LALT,           KC_SPC,           KC_SPC,           KC_SPC,           KC_RALT,  KC_RGUI, KC_RGUI, KC_RCTL,    KC_LEFT, KC_DOWN, KC_RGHT
     ),
     [1] = LAYOUT(
-        TG_LESC,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, TG_TLED, XXXXXXX,
+        TG_LED0,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, TG_LED1, TG_LED2,
         XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,             XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,
@@ -147,134 +208,31 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 
 // --- 일반화된 LED 유틸리티 ---
-static void toggle_led_with_cleanup(bool* enabled_flag, pin_t pin, bool* typing_flag, bool* breathing_flag)
-{
-    *enabled_flag = !(*enabled_flag);
-    if (!(*enabled_flag))
-    {
-        writePinLow(pin); // 끌 때 확실히 꺼주기
-        if (typing_flag)
-        {
-            *typing_flag = false;
-        }
-        if (breathing_flag)
-        {
-            *breathing_flag = false;
-        }
-    }
-}
-
-// 브리딩만 적용: 브리딩 중이 아니면 기본 켜짐, 브리딩은 housekeeping에서 처리
-static __attribute__((unused)) void update_led_breathing_only(bool enabled, pin_t pin)
-{
-    if (!enabled)
-    {
-        return;
-    }
-    if (!breathing_mode)
-    {
-        writePinHigh(pin);
-    }
-}
-
-// 타이핑 반응만 적용: invert_on_typing=true면 타이핑 시 끄기(ESC 패턴)
-static __attribute__((unused)) void update_led_typing_only(bool enabled, pin_t pin, bool invert_on_typing)
-{
-    if (!enabled)
-    {
-        return;
-    }
-    if (typing_led_on)
-    {
-        if (invert_on_typing)
-        {
-            writePinLow(pin);
-        }
-        else
-        {
-            writePinHigh(pin);
-        }
-    }
-    else
-    {
-        if (invert_on_typing)
-        {
-            writePinHigh(pin);
-        }
-        else
-        {
-            writePinLow(pin);
-        }
-    }
-}
-
-// 타이핑 + 브리딩 공통 업데이트 (invert_on_typing: 타이핑 중일 때 끔/켬 반전 여부)
-static void update_led_typing_breathing(bool enabled, pin_t pin, bool invert_on_typing)
-{
-    if (!enabled)
-    {
-        return;
-    }
-
-    if (typing_led_on)
-    {
-            breathing_mode = false; // 타이핑 감지 시 브리딩 해제
-            breathing_cycle = 0;    // 다음 진입 시 동일 시작점
-            pwm_counter_common = 0;
-        if (invert_on_typing)
-        {
-            writePinLow(pin);
-        }
-        else
-        {
-            writePinHigh(pin);
-        }
-        return;
-    }
-
-    // 타이핑이 없으면 1초 후 브리딩 모드로 전환 (진입 시 주기/카운터 초기화)
-    if (timer_elapsed32(last_typing_time) > 1000)
-    {
-        if (!breathing_mode)
-        {
-            breathing_mode = true;
-            breathing_cycle = 0;
-            pwm_counter_common = 0;
-        }
-    }
-
-    // 브리딩은 housekeeping_task_user에서 처리. 브리딩이 아니면 기본 켜짐.
-    if (!breathing_mode)
-    {
-        writePinHigh(pin);
-    }
-}
-
-
-
+// (미사용 헬퍼 제거)
 
 bool process_record_user(uint16_t keycode, keyrecord_t* record)
 {
-    if (scroll_led_enabled || esc_led_enabled )
+    // 과거 로직 복원: 효과가 하나라도 켜져 있으면 타이핑 상태 관리
+    if (led0_effect_enabled || led1_effect_enabled || led2_effect_enabled)
     {
         if (record->event.pressed)
         {
+            // 눌림 순간만 감지 (홀드 동안은 추가 갱신 없음)
             typing_led_on = true;
-            last_typing_time = timer_read32(); // 타이핑 시간 업데이트
-            breathing_mode = false;            // 타이핑 중이면 브리딩 모드 해제
+            last_typing_time = timer_read32();
+            breathing_mode = false;
+            any_key_held = true;
         }
         else
         {
-            // 눌린 키 없으면 꺼지게
-            typing_led_on = false;
+            // 눌린 키 없으면 꺼지게: 매트릭스 스캔 기반
+            bool still_held = false;
             for (uint8_t row = 0; row < MATRIX_ROWS; row++)
             {
-                if (matrix_get_row(row))
-                {
-                    typing_led_on = true;
-                    break;
-                }
+                if (matrix_get_row(row)) { still_held = true; break; }
             }
+            any_key_held = still_held;
+            typing_led_on = still_held;
         }
     }
 
@@ -590,17 +548,30 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record)
                 }
             }
             return false;
-        case TG_TLED:
+        case TG_LED1:
             if (record->event.pressed)
             {
-                toggle_led_with_cleanup(&scroll_led_enabled, LED_PIN_A7, &typing_led_on, &breathing_mode);
+                // Pin1(A7) 모드 토글: 효과 on/off
+                if (pin_mode_flags[IDX_A7] == 0) pin_mode_flags[IDX_A7] = EFFECT_TYPING_EDGE | EFFECT_BREATHING;
+                else pin_mode_flags[IDX_A7] = 0;
             }
             return false;
 
-        case TG_LESC:
+        case TG_LED0:
             if (record->event.pressed)
             {
-                toggle_led_with_cleanup(&esc_led_enabled, LED_PIN_A6, &typing_led_on, &breathing_mode);
+                // Pin0(A6)
+                if (pin_mode_flags[IDX_A6] == 0) pin_mode_flags[IDX_A6] = EFFECT_TYPING_EDGE | EFFECT_BREATHING | EFFECT_INVERT;
+                else pin_mode_flags[IDX_A6] = 0;
+            }
+            return false;
+
+        case TG_LED2:
+            if (record->event.pressed)
+            {
+                // Pin2(B0)
+                if (pin_mode_flags[IDX_B0] == 0) pin_mode_flags[IDX_B0] = EFFECT_TYPING_HOLD | EFFECT_BREATHING | EFFECT_INVERT;
+                else pin_mode_flags[IDX_B0] = 0;
             }
             return false;
     }
@@ -616,84 +587,134 @@ void keyboard_post_init_user(void)
     setPinOutput(LED_PIN_B0);
 }
 
+// 단일 일반화 함수: 모드 플래그(LED_MODE_*)로 조절
+static void update_led_typing_breathing(bool enabled, pin_t pin, uint8_t mode_flags)
+{
+    if (!enabled)
+    {
+        return;
+    }
+
+    if (mode_flags & LED_MODE_FORCE_ON)
+    {
+        writePinHigh(pin);
+        return;
+    }
+
+    const bool in_typing_window = timer_elapsed32(last_typing_time) < TYPING_FLASH_MS;
+    // const bool typing_mode = (mode_flags & LED_MODE_TYPING_HOLD) != 0;
+    // const bool typing_edge_only = (mode_flags & LED_MODE_TYPING_EDGE) != 0; // 윈도우 기반 반응으로 사용하지 않음
+    const bool invert_on_typing = (mode_flags & LED_MODE_INVERT) != 0;
+    const bool breathing_enabled = (mode_flags & LED_MODE_BREATHING) != 0;
+
+    // Typing Edge: 눌림 순간만 반응
+    if ((mode_flags & LED_MODE_TYPING_EDGE) && in_typing_window)
+    {
+        breathing_mode = false;
+        breathing_cycle = 0;
+        pwm_counter_common = 0;
+        if (invert_on_typing) { writePinLow(pin); } else { writePinHigh(pin); }
+        return;
+    }
+
+    // Typing Hold: 눌려있는 동안 반응
+    if ((mode_flags & LED_MODE_TYPING_HOLD) && any_key_held)
+    {
+        breathing_mode = false;
+        if (invert_on_typing) { writePinLow(pin); } else { writePinHigh(pin); }
+        return;
+    }
+
+    if (breathing_enabled && timer_elapsed32(last_typing_time) > 1000)
+    {
+        if (!breathing_mode)
+        {
+            breathing_mode = true;
+            breathing_cycle = 0;
+            pwm_counter_common = 0;
+        }
+    }
+    if (!breathing_enabled || !breathing_mode)
+    {
+        writePinHigh(pin);
+    }
+}
+
 void matrix_scan_user(void)
 {
-    // --- ESC(A6), Scroll(A7), F13(B1) 공통 타이핑 + 브리딩 적용 ---
-    update_led_typing_breathing(esc_led_enabled, LED_PIN_A6, false);
+    // 핀별 루프: 인디케이터 우선 -> 이펙트
+    led_t leds = host_keyboard_led_state();
+    for (uint8_t i = 0; i < 3; i++)
+    {
+        const pin_t pin = kPins[i];
+        const indicator_t ind = pin_indicator_src[i];
+        const uint8_t mode = pin_mode_flags[i];
 
-    // Scroll Lock 인디케이터가 켜지면 타이핑/브리딩 무시하고 항상 켬
-    if (host_keyboard_led_state().scroll_lock)
-    {
-        writePinHigh(LED_PIN_A7);
-    }
-    else
-    {
-        update_led_typing_breathing(scroll_led_enabled, LED_PIN_A7, false);
-    }
+        bool ind_on = false;
+        if (ind == IND_SCROLL) ind_on = leds.scroll_lock;
+        else if (ind == IND_CAPS) ind_on = leds.caps_lock;
 
-    // --- B0 CapsLock LED ---
-    if (!host_keyboard_led_state().caps_lock)
-    {
-        // CapsLock이 꺼져있으면 LED 끄기
-        writePinLow(LED_PIN_B0);
+        if (ind_on)
+        {
+            writePinHigh(pin);
+        }
+        else
+        {
+            update_led_typing_breathing(true, pin, mode);
+        }
     }
 }
 
 void housekeeping_task_user(void)
 {
-    // --- 공용 브리딩 효과: 세 핀 동시 적용 ---
-    if (breathing_mode && (esc_led_enabled || scroll_led_enabled))
+    // 브리딩 활성화 시 공용 파형 계산
+    if (breathing_mode)
     {
-        // 브리딩 사이클 업데이트 (매 호출마다 - 4초 주기)
-        breathing_cycle = (breathing_cycle + 1) % 8000; // 0-7999 사이클 (8000 호출 = 4초)
-
-        // 자연스러운 브리딩 효과 (4초 주기)
+        breathing_cycle = (breathing_cycle + 1) % 8000; // 4초 주기 가정
         uint8_t brightness;
         uint16_t phase = breathing_cycle % 8000;
         uint16_t half_cycle = 4000;
-
         if (phase < half_cycle)
         {
-            // 상승 구간: 선형 증가
             brightness = 45 + (phase * 210) / half_cycle;
         }
         else
         {
-            // 하강 구간: 선형 감소
             uint16_t progress = 8000 - phase;
             brightness = 45 + (progress * 210) / half_cycle;
         }
 
-        // 고주파 PWM 시뮬레이션: 더 빠른 깜빡임 (공용 카운터)
         pwm_counter_common += 12;
         bool new_led_state = (pwm_counter_common < brightness);
 
-        // 핀 동시 적용 (활성화된 핀만)
-        if (esc_led_enabled)
+        led_t leds = host_keyboard_led_state();
+        for (uint8_t i = 0; i < 3; i++)
         {
-            if (new_led_state) { writePinHigh(LED_PIN_A6); } else { writePinLow(LED_PIN_A6); }
-        }
-        // Scroll Lock 인디케이터가 켜져있으면 A7은 항상 켬
-        if (host_keyboard_led_state().scroll_lock)
-        {
-            writePinHigh(LED_PIN_A7);
-        }
-        else if (scroll_led_enabled)
-        {
-            if (new_led_state) { writePinHigh(LED_PIN_A7); } else { writePinLow(LED_PIN_A7); }
+            const pin_t pin = kPins[i];
+            const indicator_t ind = pin_indicator_src[i];
+            const uint8_t mode = pin_mode_flags[i];
+
+            // 인디케이터 ON이면 이펙트 무시
+            bool ind_on = false;
+            if (ind == IND_SCROLL) ind_on = leds.scroll_lock;
+            else if (ind == IND_CAPS) ind_on = leds.caps_lock;
+            if (ind_on)
+            {
+                writePinHigh(pin);
+                continue;
+            }
+
+            // 이 핀이 브리딩 모드면 파형 적용
+            if (mode & LED_MODE_BREATHING)
+            {
+                if (new_led_state) { writePinHigh(pin); } else { writePinLow(pin); }
+            }
         }
     }
 }
 
 bool led_update_user(led_t led_state)
 {
-    if (led_state.caps_lock)
-    {
-        writePinHigh(LED_PIN_B0); // CapsLock 켜지면 B0 LED 켜기
-    }
-    else
-    {
-        writePinLow(LED_PIN_B0);
-    }
+    // 인디케이터/이펙트 처리는 matrix_scan/housekeeping에서 수행
     return true;
 }
