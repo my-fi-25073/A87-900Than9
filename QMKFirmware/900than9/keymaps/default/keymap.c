@@ -13,7 +13,8 @@ static bool typing_led_on = false;     // 현재 점등 여부
 // 브리딩 LED 제어 변수
 static uint16_t breathing_cycle = 0;    // 0-1023 사이클
 static uint32_t last_typing_time = 0;   // 마지막 타이핑 시간
-static bool esc_breathing_mode = false; // ESC 브리딩 모드 여부
+static bool breathing_mode = false;     // 공용 브리딩 모드 여부
+static uint8_t pwm_counter_common = 0;  // 공용 브리딩 PWM 카운터
 
 // LED 핀 정의
 #define LED_PIN_A6 A6
@@ -144,15 +145,123 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     // clang-format on
 };
 
+
+// --- 일반화된 LED 유틸리티 ---
+static void toggle_led_with_cleanup(bool* enabled_flag, pin_t pin, bool* typing_flag, bool* breathing_flag)
+{
+    *enabled_flag = !(*enabled_flag);
+    if (!(*enabled_flag))
+    {
+        writePinLow(pin); // 끌 때 확실히 꺼주기
+        if (typing_flag)
+        {
+            *typing_flag = false;
+        }
+        if (breathing_flag)
+        {
+            *breathing_flag = false;
+        }
+    }
+}
+
+// 브리딩만 적용: 브리딩 중이 아니면 기본 켜짐, 브리딩은 housekeeping에서 처리
+static __attribute__((unused)) void update_led_breathing_only(bool enabled, pin_t pin)
+{
+    if (!enabled)
+    {
+        return;
+    }
+    if (!breathing_mode)
+    {
+        writePinHigh(pin);
+    }
+}
+
+// 타이핑 반응만 적용: invert_on_typing=true면 타이핑 시 끄기(ESC 패턴)
+static __attribute__((unused)) void update_led_typing_only(bool enabled, pin_t pin, bool invert_on_typing)
+{
+    if (!enabled)
+    {
+        return;
+    }
+    if (typing_led_on)
+    {
+        if (invert_on_typing)
+        {
+            writePinLow(pin);
+        }
+        else
+        {
+            writePinHigh(pin);
+        }
+    }
+    else
+    {
+        if (invert_on_typing)
+        {
+            writePinHigh(pin);
+        }
+        else
+        {
+            writePinLow(pin);
+        }
+    }
+}
+
+// 타이핑 + 브리딩 공통 업데이트 (invert_on_typing: 타이핑 중일 때 끔/켬 반전 여부)
+static void update_led_typing_breathing(bool enabled, pin_t pin, bool invert_on_typing)
+{
+    if (!enabled)
+    {
+        return;
+    }
+
+    if (typing_led_on)
+    {
+            breathing_mode = false; // 타이핑 감지 시 브리딩 해제
+            breathing_cycle = 0;    // 다음 진입 시 동일 시작점
+            pwm_counter_common = 0;
+        if (invert_on_typing)
+        {
+            writePinLow(pin);
+        }
+        else
+        {
+            writePinHigh(pin);
+        }
+        return;
+    }
+
+    // 타이핑이 없으면 1초 후 브리딩 모드로 전환 (진입 시 주기/카운터 초기화)
+    if (timer_elapsed32(last_typing_time) > 1000)
+    {
+        if (!breathing_mode)
+        {
+            breathing_mode = true;
+            breathing_cycle = 0;
+            pwm_counter_common = 0;
+        }
+    }
+
+    // 브리딩은 housekeeping_task_user에서 처리. 브리딩이 아니면 기본 켜짐.
+    if (!breathing_mode)
+    {
+        writePinHigh(pin);
+    }
+}
+
+
+
+
 bool process_record_user(uint16_t keycode, keyrecord_t* record)
 {
-    if (scroll_led_enabled || esc_led_enabled)
+    if (scroll_led_enabled || esc_led_enabled )
     {
         if (record->event.pressed)
         {
             typing_led_on = true;
             last_typing_time = timer_read32(); // 타이핑 시간 업데이트
-            esc_breathing_mode = false;        // 타이핑 중이면 브리딩 모드 해제
+            breathing_mode = false;            // 타이핑 중이면 브리딩 모드 해제
         }
         else
         {
@@ -480,28 +589,18 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record)
                     unregister_code(KC_LGUI);
                 }
             }
-
             return false;
         case TG_TLED:
             if (record->event.pressed)
             {
-                scroll_led_enabled = !scroll_led_enabled;
-                if (!scroll_led_enabled)
-                {
-                    writePinLow(LED_PIN_A7); // 끌 때 확실히 꺼주기
-                    typing_led_on = false;
-                }
+                toggle_led_with_cleanup(&scroll_led_enabled, LED_PIN_A7, &typing_led_on, &breathing_mode);
             }
             return false;
+
         case TG_LESC:
             if (record->event.pressed)
             {
-                esc_led_enabled = !esc_led_enabled;
-                if (!esc_led_enabled)
-                {
-                    writePinLow(LED_PIN_A6); // 끌 때 확실히 꺼주기
-                    typing_led_on = false;
-                }
+                toggle_led_with_cleanup(&esc_led_enabled, LED_PIN_A6, &typing_led_on, &breathing_mode);
             }
             return false;
     }
@@ -519,48 +618,17 @@ void keyboard_post_init_user(void)
 
 void matrix_scan_user(void)
 {
-    // --- A6 ESC LED (타이핑 + 브리딩 효과) ---
-    if (esc_led_enabled)
-    {
-        // 타이핑 중이면 LED 끄기
-        if (typing_led_on)
-        {
-            writePinLow(LED_PIN_A6);
-            esc_breathing_mode = false; // 브리딩 모드 해제
-        }
-        else
-        {
-            // 타이핑이 없으면 1초 후 브리딩 모드로 전환
-            if (timer_elapsed32(last_typing_time) > 1000) // 1초 후
-            {
-                esc_breathing_mode = true; // 브리딩 모드 활성화
-            }
+    // --- ESC(A6), Scroll(A7), F13(B1) 공통 타이핑 + 브리딩 적용 ---
+    update_led_typing_breathing(esc_led_enabled, LED_PIN_A6, false);
 
-            if (esc_breathing_mode)
-            {
-                // 브리딩 효과는 housekeeping_task_user에서 처리
-                // 여기서는 기본적으로 켜둠
-                // writePinHigh(LED_PIN_A6);
-            }
-            else
-            {
-                // 기본 상태: 최대 밝기
-                writePinHigh(LED_PIN_A6);
-            }
-        }
+    // Scroll Lock 인디케이터가 켜지면 타이핑/브리딩 무시하고 항상 켬
+    if (host_keyboard_led_state().scroll_lock)
+    {
+        writePinHigh(LED_PIN_A7);
     }
-
-    // --- A7 Typing 반응 ---
-    if (scroll_led_enabled)
+    else
     {
-        if (typing_led_on)
-        {
-            writePinHigh(LED_PIN_A7);
-        }
-        else
-        {
-            writePinLow(LED_PIN_A7);
-        }
+        update_led_typing_breathing(scroll_led_enabled, LED_PIN_A7, false);
     }
 
     // --- B0 CapsLock LED ---
@@ -573,15 +641,14 @@ void matrix_scan_user(void)
 
 void housekeeping_task_user(void)
 {
-    // --- A6 ESC LED 브리딩 효과 ---
-    if (esc_led_enabled && esc_breathing_mode)
+    // --- 공용 브리딩 효과: 세 핀 동시 적용 ---
+    if (breathing_mode && (esc_led_enabled || scroll_led_enabled))
     {
         // 브리딩 사이클 업데이트 (매 호출마다 - 4초 주기)
         breathing_cycle = (breathing_cycle + 1) % 8000; // 0-7999 사이클 (8000 호출 = 4초)
 
         // 자연스러운 브리딩 효과 (4초 주기)
         uint8_t brightness;
-        // 간단한 삼각파 기반 (더 자연스러움)
         uint16_t phase = breathing_cycle % 8000;
         uint16_t half_cycle = 4000;
 
@@ -597,61 +664,23 @@ void housekeeping_task_user(void)
             brightness = 45 + (progress * 210) / half_cycle;
         }
 
-        // 고주파 PWM 시뮬레이션: 더 빠른 깜빡임
-        static uint8_t esc_pwm_counter = 0;
-        esc_pwm_counter += 12;
+        // 고주파 PWM 시뮬레이션: 더 빠른 깜빡임 (공용 카운터)
+        pwm_counter_common += 12;
+        bool new_led_state = (pwm_counter_common < brightness);
 
-        bool new_led_state = (esc_pwm_counter < brightness);
-
-        // 매 호출마다 LED 상태 업데이트 (PWM 효과를 위해)
-        if (new_led_state)
+        // 핀 동시 적용 (활성화된 핀만)
+        if (esc_led_enabled)
         {
-            writePinHigh(LED_PIN_A6);
+            if (new_led_state) { writePinHigh(LED_PIN_A6); } else { writePinLow(LED_PIN_A6); }
         }
-        else
+        // Scroll Lock 인디케이터가 켜져있으면 A7은 항상 켬
+        if (host_keyboard_led_state().scroll_lock)
         {
-            writePinLow(LED_PIN_A6);
+            writePinHigh(LED_PIN_A7);
         }
-    }
-
-    // --- B0 브리딩 효과 (CapsLock이 켜져있을 때만) ---
-    if (host_keyboard_led_state().caps_lock)
-    {
-        // 브리딩 사이클 업데이트 (매 호출마다 - 4초 주기)
-        breathing_cycle = (breathing_cycle + 1) % 8000; // 0-7999 사이클 (8000 호출 = 4초)
-
-        // 자연스러운 브리딩 효과 (4초 주기)
-        uint8_t brightness;
-        // 간단한 삼각파 기반 (더 자연스러움)
-        uint16_t phase = breathing_cycle % 8000;
-        uint16_t half_cycle = 4000;
-
-        if (phase < half_cycle)
+        else if (scroll_led_enabled)
         {
-            // 상승 구간: 선형 증가
-            brightness = 45 + (phase * 210) / half_cycle;
-        }
-        else
-        {
-            // 하강 구간: 선형 감소
-            uint16_t progress = 8000 - phase;
-            brightness = 45 + (progress * 210) / half_cycle;
-        }
-
-        // 고주파 PWM 시뮬레이션: 더 빠른 깜빡임
-        static uint8_t pwm_counter = 0;
-        pwm_counter += 12;
-
-        bool new_led_state = (pwm_counter < brightness);
-
-        // 매 호출마다 LED 상태 업데이트 (PWM 효과를 위해)
-        if (new_led_state)
-        {
-            writePinHigh(LED_PIN_B0);
-        }
-        else
-        {
-            writePinLow(LED_PIN_B0);
+            if (new_led_state) { writePinHigh(LED_PIN_A7); } else { writePinLow(LED_PIN_A7); }
         }
     }
 }
