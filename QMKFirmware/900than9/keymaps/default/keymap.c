@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include QMK_KEYBOARD_H
+#include "myfi.h"
 
 #include "os_detection.h"
 
@@ -57,29 +58,187 @@ typedef enum {
 // 핀 배열
 static const pin_t kPins[3] = { LED_PIN_A6, LED_PIN_A7, LED_PIN_B0 };
 
-// 인디케이터 소스
+// 인디케이터 소스: myfi 설정 사용 (0:none,1:scroll,2:caps)
 typedef enum {
     IND_NONE = 0,
     IND_SCROLL = 1,
     IND_CAPS = 2,
 } indicator_t;
 
-// 핀별 모드 플래그(LED_MODE_*)와 인디케이터 소스, 타이핑시 반전 여부
-static uint8_t pin_mode_flags[3] = {
-    EFFECT_TYPING_EDGE | EFFECT_BREATHING | EFFECT_INVERT, // A6
-    EFFECT_TYPING_EDGE | EFFECT_BREATHING,                  // A7
-    EFFECT_TYPING_HOLD | EFFECT_BREATHING | EFFECT_INVERT                                                             // B0
-};
-static indicator_t pin_indicator_src[3] = {
-    IND_NONE,   // A6
-    IND_SCROLL, // A7
-    IND_CAPS    // B0
-};
+// VIA 저장소(myfi)의 플래그와 연동: getter/setter로 접근
+static inline uint8_t get_pin_mode(uint8_t idx)
+{
+    return myfi_get_led_flags(idx);
+}
+static inline void set_pin_mode(uint8_t idx, uint8_t flags)
+{
+    myfi_set_led_flags(idx, flags);
+}
+static inline indicator_t get_indicator_src(uint8_t idx)
+{
+    return (indicator_t)myfi_get_indicator(idx);
+}
+
+// 공통 유틸
+static inline bool in_typing_pulse_window(void)
+{
+    return (timer_elapsed32(last_typing_time) < TYPING_FLASH_MS);
+}
+
+static inline void stop_breathing_on_typing(void)
+{
+    breathing_mode = false;
+    breathing_cycle = 0;
+    pwm_counter_common = 0;
+}
+
+static inline void begin_breathing_if_idle(void)
+{
+    if (timer_elapsed32(last_typing_time) > 1000)
+    {
+        if (!breathing_mode)
+        {
+            breathing_mode = true;
+            breathing_cycle = 0;
+            pwm_counter_common = 0;
+        }
+    }
+}
+
+// 11가지 효과별 전용 함수
+static void update_led_effect_none(pin_t pin)
+{
+    breathing_mode = false;
+    writePinLow(pin);
+}
+
+static void update_led_effect_force_on(pin_t pin)
+{
+    breathing_mode = false;
+    writePinHigh(pin);
+}
+
+static void update_led_effect_breathing(pin_t pin)
+{
+    // 브리딩 모드는 조건 없이 즉시 활성화
+    breathing_mode = true;
+    // 파형 적용은 housekeeping_task_user에서 수행
+}
+
+static void update_led_effect_typing_hold(pin_t pin, bool invert)
+{
+    if (any_key_held)
+    {
+        stop_breathing_on_typing();
+        if (invert) { writePinLow(pin); } else { writePinHigh(pin); }
+    }
+    else
+    {
+        breathing_mode = false;
+        if (invert) { writePinHigh(pin); } else { writePinLow(pin); }
+    }
+}
+
+static void update_led_effect_typing_edge(pin_t pin, bool invert)
+{
+    if (in_typing_pulse_window())
+    {
+        stop_breathing_on_typing();
+        if (invert) { writePinLow(pin); } else { writePinHigh(pin); }
+    }
+    else
+    {
+        breathing_mode = false;
+        if (invert) { writePinHigh(pin); } else { writePinLow(pin); }
+    }
+}
+
+static void update_led_effect_hold_breathing(pin_t pin, bool invert)
+{
+    if (any_key_held)
+    {
+        stop_breathing_on_typing();
+        if (invert) { writePinLow(pin); } else { writePinHigh(pin); }
+    }
+    else
+    {
+        // 조건부 브리딩: 아이들 1초 이후에만 브리딩, 그 전에는 기본 꺼짐 유지
+        begin_breathing_if_idle();
+        if (!breathing_mode)
+        {
+            writePinLow(pin);
+        }
+    }
+}
+
+static void update_led_effect_edge_breathing(pin_t pin, bool invert)
+{
+    if (in_typing_pulse_window())
+    {
+        stop_breathing_on_typing();
+        if (invert) { writePinLow(pin); } else { writePinHigh(pin); }
+    }
+    else
+    {
+        // 조건부 브리딩: 아이들 1초 이후에만 브리딩, 그 전에는 기본 꺼짐 유지
+        begin_breathing_if_idle();
+        if (!breathing_mode)
+        {
+            writePinLow(pin);
+        }
+    }
+}
+
+// 핀별 효과 적용 래퍼: 11개 옵션을 전용 함수로 라우팅
+static void apply_pin_effect(pin_t pin, uint8_t mode)
+{
+    switch (mode)
+    {
+        case 0: // None
+            update_led_effect_none(pin);
+            break;
+        case 16: // Force On
+            update_led_effect_force_on(pin);
+            break;
+        case 1: // Typing Hold
+            update_led_effect_typing_hold(pin, false);
+            break;
+        case 4: // Typing Edge
+            update_led_effect_typing_edge(pin, false);
+            break;
+        case 2: // Breathing only
+            update_led_effect_breathing(pin);
+            break;
+        case 9: // Hold + Invert (1+8)
+            update_led_effect_typing_hold(pin, true);
+            break;
+        case 12: // Edge + Invert (4+8)
+            update_led_effect_typing_edge(pin, true);
+            break;
+        case 6: // Edge + Breathing (4+2)
+            update_led_effect_edge_breathing(pin, false);
+            break;
+        case 3: // Hold + Breathing (1+2)
+            update_led_effect_hold_breathing(pin, false);
+            break;
+        case 11: // Hold + Breathing + Invert (1+2+8)
+            update_led_effect_hold_breathing(pin, true);
+            break;
+        case 14: // Edge + Breathing + Invert (4+2+8)
+            update_led_effect_edge_breathing(pin, true);
+            break;
+        default:
+            // 알 수 없는 조합은 안전하게 끄기
+            breathing_mode = false;
+            writePinLow(pin);
+            break;
+    }
+}
 
 // 가독성을 위한 효과 활성화 매크로
-#define led0_effect_enabled (pin_mode_flags[IDX_A6] != 0)
-#define led1_effect_enabled (pin_mode_flags[IDX_A7] != 0)
-#define led2_effect_enabled (pin_mode_flags[IDX_B0] != 0)
+#define led0_effect_enabled (get_pin_mode(IDX_A6) != 0)
+#define led1_effect_enabled (get_pin_mode(IDX_A7) != 0)
+#define led2_effect_enabled (get_pin_mode(IDX_B0) != 0)
 
 enum my_keymap_layers
 {
@@ -162,10 +321,6 @@ enum keycodes
     VC_UFDA, // visual studio code unfold all
     VC_FLDR, // visual studio code fold recursive
     VC_UFDR, // visual studio code unfold recursive
-
-    TG_LED0, // Pin0(A6) 토글 키
-    TG_LED1, // Pin1(A7) 토글 키
-    TG_LED2, // Pin2(B0) 토글 키
 };
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
@@ -180,7 +335,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_LCTL, KC_LGUI, KC_LGUI, KC_LALT,           KC_SPC,           KC_SPC,           KC_SPC,           KC_RALT,  KC_RGUI, KC_RGUI, KC_RCTL,    KC_LEFT, KC_DOWN, KC_RGHT
     ),
     [1] = LAYOUT(
-        TG_LED0,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, TG_LED1, TG_LED2,
+        XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,    XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,             XXXXXXX, XXXXXXX, XXXXXXX,
         XXXXXXX,          XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX, XXXXXXX,
@@ -548,32 +703,7 @@ bool process_record_user(uint16_t keycode, keyrecord_t* record)
                 }
             }
             return false;
-        case TG_LED1:
-            if (record->event.pressed)
-            {
-                // Pin1(A7) 모드 토글: 효과 on/off
-                if (pin_mode_flags[IDX_A7] == 0) pin_mode_flags[IDX_A7] = EFFECT_TYPING_EDGE | EFFECT_BREATHING;
-                else pin_mode_flags[IDX_A7] = 0;
-            }
-            return false;
-
-        case TG_LED0:
-            if (record->event.pressed)
-            {
-                // Pin0(A6)
-                if (pin_mode_flags[IDX_A6] == 0) pin_mode_flags[IDX_A6] = EFFECT_TYPING_EDGE | EFFECT_BREATHING | EFFECT_INVERT;
-                else pin_mode_flags[IDX_A6] = 0;
-            }
-            return false;
-
-        case TG_LED2:
-            if (record->event.pressed)
-            {
-                // Pin2(B0)
-                if (pin_mode_flags[IDX_B0] == 0) pin_mode_flags[IDX_B0] = EFFECT_TYPING_HOLD | EFFECT_BREATHING | EFFECT_INVERT;
-                else pin_mode_flags[IDX_B0] = 0;
-            }
-            return false;
+        // TG_LED* 제거됨: VIA에서 제어
     }
 
     return true;
@@ -587,58 +717,7 @@ void keyboard_post_init_user(void)
     setPinOutput(LED_PIN_B0);
 }
 
-// 단일 일반화 함수: 모드 플래그(LED_MODE_*)로 조절
-static void update_led_typing_breathing(bool enabled, pin_t pin, uint8_t mode_flags)
-{
-    if (!enabled)
-    {
-        return;
-    }
-
-    if (mode_flags & LED_MODE_FORCE_ON)
-    {
-        writePinHigh(pin);
-        return;
-    }
-
-    const bool in_typing_window = timer_elapsed32(last_typing_time) < TYPING_FLASH_MS;
-    // const bool typing_mode = (mode_flags & LED_MODE_TYPING_HOLD) != 0;
-    // const bool typing_edge_only = (mode_flags & LED_MODE_TYPING_EDGE) != 0; // 윈도우 기반 반응으로 사용하지 않음
-    const bool invert_on_typing = (mode_flags & LED_MODE_INVERT) != 0;
-    const bool breathing_enabled = (mode_flags & LED_MODE_BREATHING) != 0;
-
-    // Typing Edge: 눌림 순간만 반응
-    if ((mode_flags & LED_MODE_TYPING_EDGE) && in_typing_window)
-    {
-        breathing_mode = false;
-        breathing_cycle = 0;
-        pwm_counter_common = 0;
-        if (invert_on_typing) { writePinLow(pin); } else { writePinHigh(pin); }
-        return;
-    }
-
-    // Typing Hold: 눌려있는 동안 반응
-    if ((mode_flags & LED_MODE_TYPING_HOLD) && any_key_held)
-    {
-        breathing_mode = false;
-        if (invert_on_typing) { writePinLow(pin); } else { writePinHigh(pin); }
-        return;
-    }
-
-    if (breathing_enabled && timer_elapsed32(last_typing_time) > 1000)
-    {
-        if (!breathing_mode)
-        {
-            breathing_mode = true;
-            breathing_cycle = 0;
-            pwm_counter_common = 0;
-        }
-    }
-    if (!breathing_enabled || !breathing_mode)
-    {
-        writePinHigh(pin);
-    }
-}
+// 제거됨: 효과별 전용 함수로 대체
 
 void matrix_scan_user(void)
 {
@@ -647,8 +726,8 @@ void matrix_scan_user(void)
     for (uint8_t i = 0; i < 3; i++)
     {
         const pin_t pin = kPins[i];
-        const indicator_t ind = pin_indicator_src[i];
-        const uint8_t mode = pin_mode_flags[i];
+        const indicator_t ind = get_indicator_src(i);
+        const uint8_t mode = get_pin_mode(i);
 
         bool ind_on = false;
         if (ind == IND_SCROLL) ind_on = leds.scroll_lock;
@@ -660,7 +739,7 @@ void matrix_scan_user(void)
         }
         else
         {
-            update_led_typing_breathing(true, pin, mode);
+            apply_pin_effect(pin, mode);
         }
     }
 }
@@ -691,8 +770,8 @@ void housekeeping_task_user(void)
         for (uint8_t i = 0; i < 3; i++)
         {
             const pin_t pin = kPins[i];
-            const indicator_t ind = pin_indicator_src[i];
-            const uint8_t mode = pin_mode_flags[i];
+            const indicator_t ind = get_indicator_src(i);
+            const uint8_t mode = get_pin_mode(i);
 
             // 인디케이터 ON이면 이펙트 무시
             bool ind_on = false;

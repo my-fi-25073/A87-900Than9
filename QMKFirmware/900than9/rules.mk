@@ -1,3 +1,4 @@
 VIA_ENABLE = yes
 OS_DETECTION_ENABLE = yes
 # BACKLIGHT_ENABLE = yes
+SRC += myfi.c
