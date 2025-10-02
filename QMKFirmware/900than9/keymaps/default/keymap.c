@@ -6,19 +6,15 @@
 
 #include "os_detection.h"
 
-// 타이핑 LED 제어 변수
-static bool typing_led_on = false;     // 현재 점등 여부
-
-// 브리딩 LED 제어 변수
-static uint16_t breathing_cycle = 0;    // 0-1023 사이클
-static uint32_t last_typing_time = 0;   // 마지막 타이핑 시간
-static bool breathing_mode = false;     // 공용 브리딩 모드 여부
-static uint8_t pwm_counter_common = 0;  // 공용 브리딩 PWM 카운터
-static bool any_key_held = false;       // 현재 하나라도 눌림 유지 중인지
-// 키 입력 순간 점멸 지속 시간(ms)
+static bool typing_led_on = false;
+static bool any_key_held = false;
 static const uint16_t TYPING_FLASH_MS = 33;
 
-// LED 동작 모드 플래그 (가독성 향상)
+static uint16_t breathing_cycle = 0;
+static uint32_t last_typing_time = 0;
+static uint8_t pwm_counter_common = 0;
+
+
 #ifndef BIT
 #define BIT(n) (1u << (n))
 #endif
@@ -32,7 +28,8 @@ typedef enum {
     LED_MODE_FORCE_ON         = BIT(4)  // 강제 켬(모드 무시)
 } led_mode_flag_t;
 
-// 별칭(읽기 쉬운 이름)
+typedef bool (*key_handler_t)(bool pressed, os_variant_t host);
+
 #define EFFECT_NONE          LED_MODE_NONE
 #define EFFECT_TYPING_HOLD   LED_MODE_TYPING_HOLD
 #define EFFECT_BREATHING     LED_MODE_BREATHING
@@ -40,22 +37,20 @@ typedef enum {
 #define EFFECT_INVERT        LED_MODE_INVERT
 #define EFFECT_FORCE_ON      LED_MODE_FORCE_ON
 
-// 헬퍼
+// 타이핑 기반 효과 비트 마스크
+#define EFFECT_TYPING  (LED_MODE_TYPING_HOLD | LED_MODE_TYPING_EDGE)
+#define EFFECT_NEEDS_STATE  (EFFECT_TYPING | EFFECT_BREATHING)
 #define EFFECT_HAS(mode, flag) (((mode) & (flag)) != 0)
-
-// (중복 정의 제거됨)
 
 // LED 핀 정의
 #define LED_PIN_A6 A6
 #define LED_PIN_A7 A7
 #define LED_PIN_B0 B0
 
-// 핀 인덱스
 #define IDX_A6 0
 #define IDX_A7 1
 #define IDX_B0 2
 
-// 핀 배열
 static const pin_t kPins[3] = { LED_PIN_A6, LED_PIN_A7, LED_PIN_B0 };
 
 // 인디케이터 소스: myfi 설정 사용 (0:none,1:scroll,2:caps)
@@ -65,7 +60,6 @@ typedef enum {
     IND_CAPS = 2,
 } indicator_t;
 
-// VIA 저장소(myfi)의 플래그와 연동: getter/setter로 접근
 static inline uint8_t get_pin_mode(uint8_t idx)
 {
     return myfi_get_led_flags(idx);
@@ -79,49 +73,31 @@ static inline indicator_t get_indicator_src(uint8_t idx)
     return (indicator_t)myfi_get_indicator(idx);
 }
 
-// 공통 유틸
+static inline bool require_typing_state_update(void)
+{
+    const uint8_t m0 = get_pin_mode(IDX_A6);
+    const uint8_t m1 = get_pin_mode(IDX_A7);
+    const uint8_t m2 = get_pin_mode(IDX_B0);
+    return (((m0 | m1 | m2) & EFFECT_NEEDS_STATE) != 0);
+}
+
 static inline bool in_typing_pulse_window(void)
 {
     return (timer_elapsed32(last_typing_time) < TYPING_FLASH_MS);
 }
 
-static inline void stop_breathing_on_typing(void)
-{
-    breathing_mode = false;
-    breathing_cycle = 0;
-    pwm_counter_common = 0;
-}
-
-static inline void begin_breathing_if_idle(void)
-{
-    if (timer_elapsed32(last_typing_time) > 1000)
-    {
-        if (!breathing_mode)
-        {
-            breathing_mode = true;
-            breathing_cycle = 0;
-            pwm_counter_common = 0;
-        }
-    }
-}
-
-// 11가지 효과별 전용 함수
 static void update_led_effect_none(pin_t pin)
 {
-    breathing_mode = false;
     writePinLow(pin);
 }
 
 static void update_led_effect_force_on(pin_t pin)
 {
-    breathing_mode = false;
     writePinHigh(pin);
 }
 
 static void update_led_effect_breathing(pin_t pin)
 {
-    // 브리딩 모드는 조건 없이 즉시 활성화
-    breathing_mode = true;
     // 파형 적용은 housekeeping_task_user에서 수행
 }
 
@@ -129,12 +105,10 @@ static void update_led_effect_typing_hold(pin_t pin, bool invert)
 {
     if (any_key_held)
     {
-        stop_breathing_on_typing();
         if (invert) { writePinLow(pin); } else { writePinHigh(pin); }
     }
     else
     {
-        breathing_mode = false;
         if (invert) { writePinHigh(pin); } else { writePinLow(pin); }
     }
 }
@@ -143,12 +117,10 @@ static void update_led_effect_typing_edge(pin_t pin, bool invert)
 {
     if (in_typing_pulse_window())
     {
-        stop_breathing_on_typing();
         if (invert) { writePinLow(pin); } else { writePinHigh(pin); }
     }
     else
     {
-        breathing_mode = false;
         if (invert) { writePinHigh(pin); } else { writePinLow(pin); }
     }
 }
@@ -157,16 +129,14 @@ static void update_led_effect_hold_breathing(pin_t pin, bool invert)
 {
     if (any_key_held)
     {
-        stop_breathing_on_typing();
         if (invert) { writePinLow(pin); } else { writePinHigh(pin); }
     }
     else
     {
-        // 조건부 브리딩: 아이들 1초 이후에만 브리딩, 그 전에는 기본 꺼짐 유지
-        begin_breathing_if_idle();
-        if (!breathing_mode)
+        bool idle_1s = (timer_elapsed32(last_typing_time) > 1000);
+        if (!idle_1s)
         {
-            writePinLow(pin);
+            if (invert) { writePinHigh(pin); } else { writePinLow(pin); }
         }
     }
 }
@@ -175,16 +145,14 @@ static void update_led_effect_edge_breathing(pin_t pin, bool invert)
 {
     if (in_typing_pulse_window())
     {
-        stop_breathing_on_typing();
         if (invert) { writePinLow(pin); } else { writePinHigh(pin); }
     }
     else
     {
-        // 조건부 브리딩: 아이들 1초 이후에만 브리딩, 그 전에는 기본 꺼짐 유지
-        begin_breathing_if_idle();
-        if (!breathing_mode)
+        bool idle_1s = (timer_elapsed32(last_typing_time) > 1000);
+        if (!idle_1s)
         {
-            writePinLow(pin);
+            if (invert) { writePinHigh(pin); } else { writePinLow(pin); }
         }
     }
 }
@@ -228,17 +196,12 @@ static void apply_pin_effect(pin_t pin, uint8_t mode)
             update_led_effect_edge_breathing(pin, true);
             break;
         default:
-            // 알 수 없는 조합은 안전하게 끄기
-            breathing_mode = false;
             writePinLow(pin);
             break;
     }
 }
 
-// 가독성을 위한 효과 활성화 매크로
-#define led0_effect_enabled (get_pin_mode(IDX_A6) != 0)
-#define led1_effect_enabled (get_pin_mode(IDX_A7) != 0)
-#define led2_effect_enabled (get_pin_mode(IDX_B0) != 0)
+// led*_effect_enabled 매크로 제거됨: 타이핑 관련 효과가 있을 때만 입력 상태를 추적
 
 enum my_keymap_layers
 {
@@ -362,353 +325,6 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 };
 
 
-// --- 일반화된 LED 유틸리티 ---
-// (미사용 헬퍼 제거)
-
-bool process_record_user(uint16_t keycode, keyrecord_t* record)
-{
-    // 과거 로직 복원: 효과가 하나라도 켜져 있으면 타이핑 상태 관리
-    if (led0_effect_enabled || led1_effect_enabled || led2_effect_enabled)
-    {
-        if (record->event.pressed)
-        {
-            // 눌림 순간만 감지 (홀드 동안은 추가 갱신 없음)
-            typing_led_on = true;
-            last_typing_time = timer_read32();
-            breathing_mode = false;
-            any_key_held = true;
-        }
-        else
-        {
-            // 눌린 키 없으면 꺼지게: 매트릭스 스캔 기반
-            bool still_held = false;
-            for (uint8_t row = 0; row < MATRIX_ROWS; row++)
-            {
-                if (matrix_get_row(row)) { still_held = true; break; }
-            }
-            any_key_held = still_held;
-            typing_led_on = still_held;
-        }
-    }
-
-    os_variant_t host = detected_host_os();
-    switch (keycode)
-    {
-        case OS_LANG:
-            if (record->event.pressed)
-            {
-                if (host == OS_WINDOWS)
-                {
-                    tap_code(KC_RALT);
-                }
-                else
-                {
-                    register_code(KC_LCTL);
-                    tap_code(KC_SPACE);
-                    unregister_code(KC_LCTL);
-                }
-            }
-            return false;
-        case OS_PSCR:
-            if (host == OS_WINDOWS)
-            {
-                if (record->event.pressed)
-                {
-                    register_code(KC_LGUI);
-                    register_code(KC_LSFT);
-                    tap_code(KC_S);
-                    unregister_code(KC_LGUI);
-                    unregister_code(KC_LSFT);
-                }
-            }
-            else
-            {
-                if (record->event.pressed)
-                {
-                    register_code(KC_LGUI);
-                    register_code(KC_LSFT);
-                    tap_code(KC_4);
-                    unregister_code(KC_LGUI);
-                    unregister_code(KC_LSFT);
-                }
-            }
-            return false;
-
-        case WO_LEFT:
-            if (record->event.pressed)
-            {
-                if (host == OS_WINDOWS)
-                {
-                    register_code(KC_LCTL);
-                    register_code(KC_LEFT);
-                    // unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    register_code(KC_LALT);
-                    register_code(KC_LEFT);
-                    // unregister_code(KC_LALT);
-                }
-            }
-            else
-            {
-                if (host == OS_WINDOWS)
-                {
-                    // register_code(KC_LCTL);
-                    unregister_code(KC_LEFT);
-                    unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    // register_code(KC_LALT);
-                    unregister_code(KC_LEFT);
-                    unregister_code(KC_LALT);
-                }
-            }
-            return false;
-
-        case WO_RGHT:
-            if (record->event.pressed)
-            {
-                if (host == OS_WINDOWS)
-                {
-                    register_code(KC_LCTL);
-                    register_code(KC_RIGHT);
-                    // unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    register_code(KC_LALT);
-                    register_code(KC_RIGHT);
-                    // unregister_code(KC_LALT);
-                }
-            }
-            else
-            {
-                if (host == OS_WINDOWS)
-                {
-                    // register_code(KC_LCTL);
-                    unregister_code(KC_RIGHT);
-                    unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    // register_code(KC_LALT);
-                    unregister_code(KC_RIGHT);
-                    unregister_code(KC_LALT);
-                }
-            }
-
-            return false;
-
-        case MC_LCMD:
-            if (host == OS_WINDOWS)
-            {
-                if (record->event.pressed)
-                    register_code(KC_LCTL);
-                else
-                    unregister_code(KC_LCTL);
-            }
-            else
-            {
-                if (record->event.pressed)
-                    register_code(KC_LGUI);
-                else
-                    unregister_code(KC_LGUI);
-            }
-
-            return false;
-
-        case MC_LCTL:
-            if (host == OS_WINDOWS)
-            {
-                if (record->event.pressed)
-                    register_code(KC_LGUI);
-                else
-                    unregister_code(KC_LGUI);
-            }
-            else
-            {
-                if (record->event.pressed)
-                    register_code(KC_LCTL);
-                else
-                    unregister_code(KC_LCTL);
-            }
-
-            return false;
-
-        case GO_LEFT:
-            if (host == OS_WINDOWS)
-            {
-                if (record->event.pressed)
-                {
-                    register_code(KC_LGUI);
-                    register_code(KC_LCTL);
-                    tap_code(KC_LEFT);
-                    unregister_code(KC_LCTL);
-                    unregister_code(KC_LGUI);
-                }
-            }
-            else
-            {
-                if (record->event.pressed)
-                {
-                    register_code(KC_LCTL);
-                    tap_code(KC_LEFT);
-                    unregister_code(KC_LCTL);
-                }
-            }
-
-            return false;
-
-        case GO_RGHT:
-            if (host == OS_WINDOWS)
-            {
-                if (record->event.pressed)
-                {
-                    register_code(KC_LGUI);
-                    register_code(KC_LCTL);
-                    tap_code(KC_RIGHT);
-                    unregister_code(KC_LCTL);
-                    unregister_code(KC_LGUI);
-                }
-            }
-            else
-            {
-                if (record->event.pressed)
-                {
-                    register_code(KC_LCTL);
-                    tap_code(KC_RIGHT);
-                    unregister_code(KC_LCTL);
-                }
-            }
-
-            return false;
-
-        case GO_UP:
-            if (host == OS_WINDOWS)
-            {
-                if (record->event.pressed)
-                {
-                    register_code(KC_LGUI);
-                    tap_code(KC_TAB);
-                    unregister_code(KC_LGUI);
-                }
-            }
-            else
-            {
-                if (record->event.pressed)
-                {
-                    register_code(KC_LCTL);
-                    tap_code(KC_UP);
-                    unregister_code(KC_LCTL);
-                }
-            }
-            return false;
-
-        case VS_BRCK:
-            if (record->event.pressed)
-            {
-                if (host == OS_WINDOWS)
-                {
-                    register_code(KC_LCTL);
-                    register_code(KC_LALT);
-                    tap_code(KC_PAUS);
-                    unregister_code(KC_LALT);
-                    unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    tap_code(KC_PAUS);
-                }
-            }
-            return false;
-
-        case VC_FLDA:
-            if (record->event.pressed)
-            {
-                if (host == OS_WINDOWS)
-                {
-                    register_code(KC_LCTL);
-                    tap_code(KC_K);
-                    tap_code(KC_0);
-                    unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    register_code(KC_LGUI);
-                    tap_code(KC_K);
-                    tap_code(KC_0);
-                    unregister_code(KC_LGUI);
-                }
-            }
-            return false;
-
-        case VC_UFDA:
-            if (record->event.pressed)
-            {
-                if (host == OS_WINDOWS)
-                {
-                    register_code(KC_LCTL);
-                    tap_code(KC_K);
-                    tap_code(KC_J);
-                    unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    register_code(KC_LGUI);
-                    tap_code(KC_K);
-                    tap_code(KC_J);
-                    unregister_code(KC_LGUI);
-                }
-            }
-            return false;
-
-        case VC_FLDR:
-            if (record->event.pressed)
-            {
-                if (host == OS_WINDOWS)
-                {
-                    register_code(KC_LCTL);
-                    tap_code(KC_K);
-                    tap_code(KC_LBRC);
-                    unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    register_code(KC_LGUI);
-                    tap_code(KC_K);
-                    tap_code(KC_LBRC);
-                    unregister_code(KC_LGUI);
-                }
-            }
-            return false;
-
-        case VC_UFDR:
-            if (record->event.pressed)
-            {
-                if (host == OS_WINDOWS)
-                {
-                    register_code(KC_LCTL);
-                    tap_code(KC_K);
-                    tap_code(KC_RBRC);
-                    unregister_code(KC_LCTL);
-                }
-                else
-                {
-                    register_code(KC_LGUI);
-                    tap_code(KC_K);
-                    tap_code(KC_RBRC);
-                    unregister_code(KC_LGUI);
-                }
-            }
-            return false;
-        // TG_LED* 제거됨: VIA에서 제어
-    }
-
-    return true;
-}
-
 void keyboard_post_init_user(void)
 {
     // A6, A7, B0 핀 출력 설정
@@ -717,11 +333,10 @@ void keyboard_post_init_user(void)
     setPinOutput(LED_PIN_B0);
 }
 
-// 제거됨: 효과별 전용 함수로 대체
+
 
 void matrix_scan_user(void)
 {
-    // 핀별 루프: 인디케이터 우선 -> 이펙트
     led_t leds = host_keyboard_led_state();
     for (uint8_t i = 0; i < 3; i++)
     {
@@ -746,45 +361,60 @@ void matrix_scan_user(void)
 
 void housekeeping_task_user(void)
 {
-    // 브리딩 활성화 시 공용 파형 계산
-    if (breathing_mode)
+    breathing_cycle = (breathing_cycle + 1) % 8000; // 4초 주기 가정
+    uint8_t brightness;
+    uint16_t phase = breathing_cycle % 8000;
+    uint16_t half_cycle = 4000;
+    if (phase < half_cycle)
     {
-        breathing_cycle = (breathing_cycle + 1) % 8000; // 4초 주기 가정
-        uint8_t brightness;
-        uint16_t phase = breathing_cycle % 8000;
-        uint16_t half_cycle = 4000;
-        if (phase < half_cycle)
+        brightness = 45 + (phase * 210) / half_cycle;
+    }
+    else
+    {
+        uint16_t progress = 8000 - phase;
+        brightness = 45 + (progress * 210) / half_cycle;
+    }
+
+    pwm_counter_common += 12;
+    bool new_led_state = (pwm_counter_common < brightness);
+    const bool in_pulse = in_typing_pulse_window();
+    const bool idle_1s = (timer_elapsed32(last_typing_time) > 1000);
+    led_t leds = host_keyboard_led_state();
+    for (uint8_t i = 0; i < 3; i++)
+    {
+        const pin_t pin = kPins[i];
+        const indicator_t ind = get_indicator_src(i);
+        const uint8_t mode = get_pin_mode(i);
+
+        // 인디케이터 ON이면 이펙트 무시
+        bool ind_on = false;
+        if (ind == IND_SCROLL) ind_on = leds.scroll_lock;
+        else if (ind == IND_CAPS) ind_on = leds.caps_lock;
+        if (ind_on)
         {
-            brightness = 45 + (phase * 210) / half_cycle;
+            writePinHigh(pin);
+            continue;
         }
-        else
+
+        if (EFFECT_HAS(mode, EFFECT_BREATHING))
         {
-            uint16_t progress = 8000 - phase;
-            brightness = 45 + (progress * 210) / half_cycle;
-        }
-
-        pwm_counter_common += 12;
-        bool new_led_state = (pwm_counter_common < brightness);
-
-        led_t leds = host_keyboard_led_state();
-        for (uint8_t i = 0; i < 3; i++)
-        {
-            const pin_t pin = kPins[i];
-            const indicator_t ind = get_indicator_src(i);
-            const uint8_t mode = get_pin_mode(i);
-
-            // 인디케이터 ON이면 이펙트 무시
-            bool ind_on = false;
-            if (ind == IND_SCROLL) ind_on = leds.scroll_lock;
-            else if (ind == IND_CAPS) ind_on = leds.caps_lock;
-            if (ind_on)
+            bool want_hold = EFFECT_HAS(mode, EFFECT_TYPING_HOLD);
+            bool want_edge = EFFECT_HAS(mode, EFFECT_TYPING_EDGE);
+            bool allow_breath;
+            if (!want_hold && !want_edge)
             {
-                writePinHigh(pin);
-                continue;
+                allow_breath = idle_1s;
+            }
+            else if (want_hold)
+            {
+                allow_breath = (!any_key_held) && idle_1s;
+            }
+            else /* want_edge */
+            {
+                allow_breath = (!in_pulse) && idle_1s;
             }
 
-            // 이 핀이 브리딩 모드면 파형 적용
-            if (mode & LED_MODE_BREATHING)
+            if (allow_breath)
             {
                 if (new_led_state) { writePinHigh(pin); } else { writePinLow(pin); }
             }
@@ -792,8 +422,351 @@ void housekeeping_task_user(void)
     }
 }
 
-bool led_update_user(led_t led_state)
+// Key handlers (return false to stop further processing)
+static bool h_os_lang(bool pressed, os_variant_t host)
 {
-    // 인디케이터/이펙트 처리는 matrix_scan/housekeeping에서 수행
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        tap_code(KC_RALT);
+    }
+    else
+    {
+        register_code(KC_LCTL);
+        tap_code(KC_SPACE);
+        unregister_code(KC_LCTL);
+    }
+    return false;
+}
+
+static bool h_os_pscr(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        register_code(KC_LGUI);
+        register_code(KC_LSFT);
+        tap_code(KC_S);
+        unregister_code(KC_LGUI);
+        unregister_code(KC_LSFT);
+    }
+    else
+    {
+        register_code(KC_LGUI);
+        register_code(KC_LSFT);
+        tap_code(KC_4);
+        unregister_code(KC_LGUI);
+        unregister_code(KC_LSFT);
+    }
+    return false;
+}
+
+static bool h_word_left(bool pressed, os_variant_t host)
+{
+    if (pressed)
+    {
+        if (host == OS_WINDOWS)
+        {
+            register_code(KC_LCTL);
+            register_code(KC_LEFT);
+        }
+        else
+        {
+            register_code(KC_LALT);
+            register_code(KC_LEFT);
+        }
+    }
+    else
+    {
+        if (host == OS_WINDOWS)
+        {
+            unregister_code(KC_LEFT);
+            unregister_code(KC_LCTL);
+        }
+        else
+        {
+            unregister_code(KC_LEFT);
+            unregister_code(KC_LALT);
+        }
+    }
+    return false;
+}
+
+static bool h_word_right(bool pressed, os_variant_t host)
+{
+    if (pressed)
+    {
+        if (host == OS_WINDOWS)
+        {
+            register_code(KC_LCTL);
+            register_code(KC_RIGHT);
+        }
+        else
+        {
+            register_code(KC_LALT);
+            register_code(KC_RIGHT);
+        }
+    }
+    else
+    {
+        if (host == OS_WINDOWS)
+        {
+            unregister_code(KC_RIGHT);
+            unregister_code(KC_LCTL);
+        }
+        else
+        {
+            unregister_code(KC_RIGHT);
+            unregister_code(KC_LALT);
+        }
+    }
+    return false;
+}
+
+static bool h_mc_lcmd(bool pressed, os_variant_t host)
+{
+    if (host == OS_WINDOWS)
+    {
+        if (pressed) register_code(KC_LCTL); else unregister_code(KC_LCTL);
+    }
+    else
+    {
+        if (pressed) register_code(KC_LGUI); else unregister_code(KC_LGUI);
+    }
+    return false;
+}
+
+static bool h_mc_lctl(bool pressed, os_variant_t host)
+{
+    if (host == OS_WINDOWS)
+    {
+        if (pressed) register_code(KC_LGUI); else unregister_code(KC_LGUI);
+    }
+    else
+    {
+        if (pressed) register_code(KC_LCTL); else unregister_code(KC_LCTL);
+    }
+    return false;
+}
+
+static bool h_go_left(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        // reg: LGUI then LCTL, unreg: LCTL then LGUI
+        register_code(KC_LGUI);
+        register_code(KC_LCTL);
+        tap_code(KC_LEFT);
+        unregister_code(KC_LCTL);
+        unregister_code(KC_LGUI);
+    }
+    else
+    {
+        register_code(KC_LCTL);
+        tap_code(KC_LEFT);
+        unregister_code(KC_LCTL);
+    }
+    return false;
+}
+
+static bool h_go_right(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        register_code(KC_LGUI);
+        register_code(KC_LCTL);
+        tap_code(KC_RIGHT);
+        unregister_code(KC_LCTL);
+        unregister_code(KC_LGUI);
+    }
+    else
+    {
+        register_code(KC_LCTL);
+        tap_code(KC_RIGHT);
+        unregister_code(KC_LCTL);
+    }
+    return false;
+}
+
+static bool h_go_up(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        register_code(KC_LGUI);
+        tap_code(KC_TAB);
+        unregister_code(KC_LGUI);
+    }
+    else
+    {
+        register_code(KC_LCTL);
+        tap_code(KC_UP);
+        unregister_code(KC_LCTL);
+    }
+    return false;
+}
+
+static bool h_vs_brck(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        register_code(KC_LCTL);
+        register_code(KC_LALT);
+        tap_code(KC_PAUS);
+        unregister_code(KC_LALT);
+        unregister_code(KC_LCTL);
+    }
+    else
+    {
+        tap_code(KC_PAUS);
+    }
+    return false;
+}
+
+static bool h_vc_flda(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        register_code(KC_LCTL);
+        tap_code(KC_K);
+        tap_code(KC_0);
+        unregister_code(KC_LCTL);
+    }
+    else
+    {
+        register_code(KC_LGUI);
+        tap_code(KC_K);
+        tap_code(KC_0);
+        unregister_code(KC_LGUI);
+    }
+    return false;
+}
+
+static bool h_vc_ufda(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        register_code(KC_LCTL);
+        tap_code(KC_K);
+        tap_code(KC_J);
+        unregister_code(KC_LCTL);
+    }
+    else
+    {
+        register_code(KC_LGUI);
+        tap_code(KC_K);
+        tap_code(KC_J);
+        unregister_code(KC_LGUI);
+    }
+    return false;
+}
+
+static bool h_vc_fldr(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        register_code(KC_LCTL);
+        tap_code(KC_K);
+        tap_code(KC_LBRC);
+        unregister_code(KC_LCTL);
+    }
+    else
+    {
+        register_code(KC_LGUI);
+        tap_code(KC_K);
+        tap_code(KC_LBRC);
+        unregister_code(KC_LGUI);
+    }
+    return false;
+}
+
+static bool h_vc_ufdr(bool pressed, os_variant_t host)
+{
+    if (!pressed) return false;
+    if (host == OS_WINDOWS)
+    {
+        register_code(KC_LCTL);
+        tap_code(KC_K);
+        tap_code(KC_RBRC);
+        unregister_code(KC_LCTL);
+    }
+    else
+    {
+        register_code(KC_LGUI);
+        tap_code(KC_K);
+        tap_code(KC_RBRC);
+        unregister_code(KC_LGUI);
+    }
+    return false;
+}
+
+typedef struct {
+    uint16_t keycode;
+    key_handler_t handler;
+} key_handler_entry_t;
+
+static const key_handler_entry_t s_key_handlers[] = {
+    { OS_LANG, h_os_lang },
+    { OS_PSCR, h_os_pscr },
+    { WO_LEFT, h_word_left },
+    { WO_RGHT, h_word_right },
+    { MC_LCMD, h_mc_lcmd },
+    { MC_LCTL, h_mc_lctl },
+    { GO_LEFT, h_go_left },
+    { GO_RGHT, h_go_right },
+    { GO_UP,   h_go_up },
+    { VS_BRCK, h_vs_brck },
+    { VC_FLDA, h_vc_flda },
+    { VC_UFDA, h_vc_ufda },
+    { VC_FLDR, h_vc_fldr },
+    { VC_UFDR, h_vc_ufdr },
+};
+
+static inline key_handler_t find_key_handler(uint16_t kc)
+{
+    for (size_t i = 0; i < sizeof(s_key_handlers) / sizeof(s_key_handlers[0]); i++)
+    {
+        if (s_key_handlers[i].keycode == kc) return s_key_handlers[i].handler;
+    }
+    return NULL;
+}
+
+bool process_record_user(uint16_t keycode, keyrecord_t* record)
+{
+    if (require_typing_state_update())
+    {
+        if (record->event.pressed)
+        {
+            // 눌림 순간만 감지 (홀드 동안은 추가 갱신 없음)
+            typing_led_on = true;
+            last_typing_time = timer_read32();
+            any_key_held = true;
+        }
+        else
+        {
+            // 눌린 키 없으면 꺼지게: 매트릭스 스캔 기반
+            bool still_held = false;
+            for (uint8_t row = 0; row < MATRIX_ROWS; row++)
+            {
+                if (matrix_get_row(row)) { still_held = true; break; }
+            }
+            any_key_held = still_held;
+            typing_led_on = still_held;
+        }
+    }
+
+    os_variant_t host = detected_host_os();
+    key_handler_t handler = find_key_handler(keycode);
+    if (handler != NULL)
+    {
+        return handler(record->event.pressed, host) /* always false currently */;
+    }
+
     return true;
 }
