@@ -517,5 +517,77 @@
                 }
             ]
         }
+    ],
+    "customKeycodes": [
+        {
+            "title": "Go to the virtual desktop on the left",
+            "name": "VD Left",
+            "shortName": "VD Left"
+        },
+        {
+            "title": "Go to the virtual desktop on the right",
+            "name": "VD Right",
+            "shortName": "VD Right"
+        },
+        {
+            "title": "Open Task View to switch virtual desktops",
+            "name": "VD Task View",
+            "shortName": "VD Task"
+        },
+        {
+            "title": "Move the cursor to the word on the left",
+            "name": "Word Left",
+            "shortName": "WO Left"
+        },
+        {
+            "title": "Move the cursor to the word on the right",
+            "name": "Word Right",
+            "shortName": "WO Right"
+        },
+        {
+            "title": "Use the OS shortcut to switch input language",
+            "name": "OS Lang Switch",
+            "shortName": "OS LANG"
+        },
+        {
+            "title": "Use the OS shortcut to capture a screenshot",
+            "name": "OS Screen shot",
+            "shortName": "OS PSCR"
+        },
+        {
+            "title": "Press Left Control on Windows or Left Command on macOS",
+            "name": "OS Left Control",
+            "shortName": "OS LCTL"
+        },
+        {
+            "title": "Press Left GUI key on Windows or Left Control on macOS",
+            "name": "OS Left GUI",
+            "shortName": "OS LGUI"
+        },
+        {
+            "title": "Pause and put a breakpoint in Microsoft Visual Studio",
+            "name": "VS Break point",
+            "shortName": "VS BRCK"
+        },
+        {
+            "title": "Fold all code regions in Visual Studio Code",
+            "name": "VS Code Fold All",
+            "shortName": "VC FLDA"
+        },
+        {
+            "title": "Unfold all code regions in Visual Studio Code",
+            "name": "VS Code Unfold All",
+            "shortName": "VC UFDA"
+        },
+        {
+            "title": "Fold the current region recursively in Visual Studio Code",
+            "name": "VS Code Fold Recursive",
+            "shortName": "VC FLDR"
+        },
+        {
+            "title": "Unfold the current region recursively in Visual Studio Code",
+            "name": "VS Code Unfold Recursive",
+            "shortName": "VC UFDR"
+        }
     ]
 }
