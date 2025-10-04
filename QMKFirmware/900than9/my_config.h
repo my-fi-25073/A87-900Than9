@@ -3,10 +3,13 @@
 #include "quantum.h"
 
 typedef union {
-    uint32_t raw; // 모든 설정은 myfi.c에서 비트 pack/unpack으로 관리
+    uint32_t raw; // 모든 설정은 my_config.c에서 비트 pack/unpack으로 관리
 } my_config_t;
 
 extern my_config_t g_my_config;
+
+// 변경이 있을 경우에만 EEPROM 저장
+void my_config_save_if_changed(uint32_t before_raw);
 
 #ifdef VIA_ENABLE
 enum custom_value_id {
@@ -22,11 +25,11 @@ enum custom_value_id {
 #endif
 
 // 핀 인덱스와 동일한 순서 사용: 0:A6, 1:A7, 2:B0
-uint8_t myfi_get_led_flags(uint8_t idx);
-void myfi_set_led_flags(uint8_t idx, uint8_t flags);
+uint8_t my_config_get_led_flags(uint8_t idx);
+void my_config_set_led_flags(uint8_t idx, uint8_t flags);
 
 // 인디케이터 get/set (0:none, 1:scroll, 2:caps)
-uint8_t myfi_get_indicator(uint8_t idx);
-void myfi_set_indicator(uint8_t idx, uint8_t indicator);
+uint8_t my_config_get_indicator(uint8_t idx);
+void my_config_set_indicator(uint8_t idx, uint8_t indicator);
 
-#define MYFI_CFG_VERSION 1u
+// 버전 관리는 사용하지 않으므로 제거됨
